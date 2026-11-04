@@ -36,6 +36,7 @@ add_library(videotest_core STATIC
     src/streams/v4l2_source.cpp
     src/streams/synthetic_source.cpp
     src/model/segmenter.cpp
+    src/model/class_names.cpp
     src/track/tracker.cpp
     src/pipeline.cpp
     src/render/renderer.cpp

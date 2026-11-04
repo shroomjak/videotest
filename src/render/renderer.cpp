@@ -3,8 +3,11 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <string>
 
 #include <opencv2/imgproc.hpp>
+
+#include "model/class_names.hpp"
 
 namespace vt {
 namespace {
@@ -18,6 +21,13 @@ const std::array<cv::Scalar, 20> kPalette = {
     cv::Scalar(147, 69, 52),   cv::Scalar(255, 115, 100), cv::Scalar(236, 24, 0),
     cv::Scalar(255, 56, 132),  cv::Scalar(133, 0, 82),    cv::Scalar(255, 56, 203),
     cv::Scalar(200, 149, 255), cv::Scalar(199, 55, 255)};
+
+// 0.82 -> "0.82" без форматирования потока (snprintf дешевле и без iostream).
+std::string score_text(float score) {
+    char buffer[8];
+    std::snprintf(buffer, sizeof(buffer), "%.2f", static_cast<double>(score));
+    return buffer;
+}
 
 // Текст с чёрной подложкой: на светлом кадре белые буквы иначе не читаются.
 void put_label(cv::Mat& canvas, const std::string& text, cv::Point origin,
@@ -83,10 +93,13 @@ cv::Mat draw_overlay(const cv::Mat& bgr, const std::vector<Instance>& instances,
         if (options.show_boxes) {
             cv::rectangle(canvas, instance.box, color, thickness, cv::LINE_AA);
         }
-        char text[64];
-        std::snprintf(text, sizeof(text), "#%d c%d %.2f", instance.track_id, instance.class_id,
-                      instance.score);
-        put_label(canvas, text, cv::Point(instance.box.x, instance.box.y),
+        // Подпись: "#id имя score". Имя берём из списка классов; если его нет
+        // (меньше классов в файле, чем предсказала модель) — падаем обратно на
+        // "c<id>", чтобы подпись не пропала совсем.
+        const std::string label =
+            std::string("#") + std::to_string(instance.track_id) + " " +
+            class_label(options.class_names, instance.class_id) + " " + score_text(instance.score);
+        put_label(canvas, label, cv::Point(instance.box.x, instance.box.y),
                   cv::Scalar(255, 255, 255), scale);
     }
     return canvas;

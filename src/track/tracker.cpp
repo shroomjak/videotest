@@ -41,7 +41,20 @@ cv::Rect Tracker::to_box(const cv::Mat& state) {
 }
 
 void Tracker::predict(Track& track) const {
-    track.state = track.transition * track.state;
+    // Важно: арифметику predict() делает сам Калман, а НЕ умножение матриц
+    // руками. Без вызова kalman.predict() матрица ковариации ошибки не растёт
+    // (errorCovPre остаётся единичной), gain выходит крошечным, и трек почти не
+    // двигается — объект «убегает» от своего трека, IoU падает ниже порога,
+    // и id пересоздаётся.
+    //
+    // cv::KalmanFilter::predict() использует СВОИ копии матриц (transitionMatrix
+    // и другие), которые он берёт из публичных полей на момент вызова. Поэтому
+    // сначала синхронизируем поля, а результат забираем из statePre.
+    track.kalman.transitionMatrix = track.transition;
+    track.kalman.measurementMatrix = track.measurement;
+    track.kalman.predict();
+
+    track.state = track.kalman.statePre.clone();
     track.box = to_box(track.state);
 }
 
@@ -53,7 +66,9 @@ void Tracker::correct(Track& track, const cv::Rect& box) const {
     measurement.at<float>(2) = static_cast<float>(box.width);
     measurement.at<float>(3) = static_cast<float>(box.height);
 
-    track.state = track.kalman.correct(measurement);
+    track.kalman.transitionMatrix = track.transition;
+    track.kalman.measurementMatrix = track.measurement;
+    track.state = track.kalman.correct(measurement).clone();
     track.box = to_box(track.state);
     track.missed = 0;
 }
@@ -73,7 +88,7 @@ void Tracker::update(std::vector<Instance>& instances) {
     };
     std::vector<Pair> pairs;
     for (std::size_t d = 0; d < instances.size(); ++d) {
-    for (std::size_t t = 0; t < tracks_.size(); ++t) {
+        for (std::size_t t = 0; t < tracks_.size(); ++t) {
             const float value = iou(instances[d].box, tracks_[t].box);
             if (value >= config_.iou_threshold) {
                 pairs.push_back({value, d, t});

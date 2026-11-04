@@ -1,6 +1,7 @@
 // Тесты очереди конвейера: вытеснение старого кадра и ожидание с таймаутом.
 // Без фреймворков — минимум кода, всё видно.
 
+#include <atomic>
 #include <cstdio>
 #include <optional>
 #include <thread>
@@ -80,6 +81,51 @@ int main() {
         // Каждый положенный элемент либо доставлен, либо вытеснен, либо ещё в
         // очереди — потерь «в никуда» быть не может.
         CHECK(static_cast<std::size_t>(kTotal) >= dropped_total);
+    }
+
+    // 5. Баланс при нагрузке: один производитель, один потребитель.
+    //    Главный инвариант: положено == доставлено + вытеснено + осталось.
+    //    Если не сходится — элемент потерялся или доставлен дважды, то есть в
+    //    Queue гонка либо ошибка в политике переполнения.
+    //    Плюс монотонность: вытесняется всегда самый старый, поэтому
+    //    доставленные значения строго возрастают.
+    {
+        constexpr int kTotal = 20000;
+        vt::Queue<int> queue(3);
+        std::atomic<std::size_t> dropped{0};
+        std::atomic<bool> producer_done{false};
+
+        std::thread producer([&] {
+            for (int i = 0; i < kTotal; ++i) {
+                dropped.fetch_add(queue.push(i));
+            }
+            producer_done.store(true);
+        });
+
+        std::size_t received = 0;
+        int last = -1;
+        bool monotonic = true;
+        while (true) {
+            if (auto value = queue.pop(20ms)) {
+                if (*value <= last) {
+                    monotonic = false;
+                }
+                last = *value;
+                ++received;
+                continue;
+            }
+            // pop() ничего не дал. Выходим только если производитель уже
+            // закончил И очередь действительно пуста — тогда все элементы
+            // либо получены, либо вытеснены.
+            if (producer_done.load(std::memory_order_acquire) && queue.size() == 0) {
+                break;
+            }
+        }
+        producer.join();
+
+        CHECK(monotonic);
+        CHECK(queue.size() == 0);
+        CHECK(received + dropped.load() == static_cast<std::size_t>(kTotal));
     }
 
     if (g_failed != 0) {

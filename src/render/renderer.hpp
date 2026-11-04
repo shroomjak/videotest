@@ -17,9 +17,13 @@ struct ViewOptions {
     float mask_alpha = 0.45f;  // прозрачность заливки маски
     bool show_masks = true;
     bool show_boxes = true;
+    // Имена классов по индексу. Пусто — подписываем как "c<id>".
+    // Вектор копируется в опции один раз при старте, поэтому ссылок на
+    // временные объекты здесь нет.
+    std::vector<std::string> class_names;
 };
 
-// Рисует маску/бокс/подпись с track_id поверх копии кадра.
+// Рисует маску/бокс/подпись «#track_id имя_класса score» поверх копии кадра.
 cv::Mat draw_overlay(const cv::Mat& bgr, const std::vector<Instance>& instances,
                      const ViewOptions& options);
 

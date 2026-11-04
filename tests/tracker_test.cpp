@@ -1,7 +1,9 @@
 // Тесты трекера: id сохраняется между кадрами, новый объект получает новый id,
 // трек исчезает после max_age кадров без детекции.
 
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 #include "track/tracker.hpp"
@@ -73,7 +75,43 @@ int main() {
         CHECK(again[0].track_id == 1);
     }
 
-    // 4. Пустая разметка (модели нет) не должна падать.
+    // 4. Движущийся объект сохраняет id, а фильтр держит его положение.
+    //
+    //    Регрессионный тест на конкретную ошибку: если не вызывать
+    //    kalman.predict(), ковариация ошибки не растёт, gain остаётся крошечным,
+    //    и сглаженный бокс «залипает» на первом положении. Объект уезжает,
+    //    IoU падает ниже порога — трек теряется, id скачет.
+    {
+        Tracker tracker(TrackerConfig{});
+        int first_id = -1;
+        bool same_id = true;
+        for (int step = 0; step < 25; ++step) {
+            // 15 пикселей за кадр при боксе 100x100: IoU двух соседних
+            // положений ~0.55, то есть сопоставление по IoU проходит.
+            std::vector<vt::Instance> frame{make(100.0f + 15.0f * step, 200.0f)};
+            tracker.update(frame);
+            if (step == 0) {
+                first_id = frame[0].track_id;
+            } else if (frame[0].track_id != first_id) {
+                same_id = false;
+            }
+        }
+        CHECK(same_id);
+        CHECK(tracker.active_tracks() == 1);
+
+        // Трек обязан двигаться вместе с объектом. К 25-му кадру объект прошёл
+        // 375 px; если предсказание Калмана не работает, бокс останется
+        // около x=100 и это условие провалится.
+        const std::vector<cv::Rect> boxes = tracker.active_boxes();
+        CHECK(boxes.size() == 1);
+        if (boxes.size() == 1) {
+            CHECK(boxes[0].x > 300);
+            // И не должен убегать вперёд/назад больше, чем на пару шагов.
+            CHECK(std::abs(boxes[0].x - (100 + 15 * 24)) < 60);
+        }
+    }
+
+    // 5. Пустая разметка (модели нет) не должна падать.
     {
         Tracker tracker(TrackerConfig{});
         std::vector<vt::Instance> nothing;

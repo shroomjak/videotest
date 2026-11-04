@@ -45,6 +45,17 @@ public:
 
     std::size_t active_tracks() const { return tracks_.size(); }
 
+    // Положения живых треков (сглаженные фильтром). Нужны тестам и отладке:
+    // по ним видно, что предсказание Калмана вообще работает.
+    std::vector<cv::Rect> active_boxes() const {
+        std::vector<cv::Rect> boxes;
+        boxes.reserve(tracks_.size());
+        for (const Track& track : tracks_) {
+            boxes.push_back(track.box);
+        }
+        return boxes;
+    }
+
 private:
     struct Track {
         int id = 0;

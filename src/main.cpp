@@ -9,6 +9,7 @@
 // подбор другого. Так видно, что именно происходит.
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -21,6 +22,7 @@
 
 #include "frame.hpp"
 #include "logger.hpp"
+#include "model/class_names.hpp"
 #include "pipeline.hpp"
 #include "render/renderer.hpp"
 #include "stop_flag.hpp"
@@ -40,7 +42,7 @@ struct Args {
 
     std::string model;            // путь к .onnx; пусто — пустая разметка
     std::string out_layout = "raw";  // формат выхода модели: raw | nms
-    int classes = 80;
+    std::string classes = "80";   // число классов ИЛИ путь к файлу имён
     float score = 0.35f;
     float nms = 0.45f;
     int threads = 2;
@@ -49,6 +51,10 @@ struct Args {
     bool show = true;         // false — работаем без окна (для записи)
     int max_frames = 0;       // 0 — без ограничения (для смоук-тестов)
     std::string snapshot;     // если задан — сохранить один кадр в png
+
+    // Заполняется после разбора --classes.
+    int class_count = 80;
+    std::vector<std::string> class_names;
 
     bool help = false;
 };
@@ -66,7 +72,9 @@ void print_help(const char* program) {
         << "  --model path.onnx      если не задана — разметка пустая, потоки совпадают\n"
         << "  --out-layout raw|nms   формат выхода: raw = [1,4+nc+32,N] (NMS в C++),\n"
         << "                         nms = [1,N,6+32] (NMS уже в графе, YOLO26)\n"
-        << "  --classes N            число классов модели (80)\n"
+        << "  --classes N|file.txt    число классов (80) ИЛИ файл с именами,\n"
+        << "                         по одному в строке; при 80 подставляются\n"
+        << "                         стандартные имена COCO\n"
         << "  --score F              порог уверенности (0.35)\n"
         << "  --nms F                порог подавления перекрытий (0.45)\n"
         << "  --threads N            intra-op потоков ONNX Runtime (2)\n\n"
@@ -110,7 +118,7 @@ bool parse_args(int argc, char** argv, Args& args, std::string& error) {
         } else if (key == "--out-layout") {
             args.out_layout = value("--out-layout");
         } else if (key == "--classes") {
-            args.classes = std::stoi(value("--classes"));
+            args.classes = value("--classes");
         } else if (key == "--score") {
             args.score = std::stof(value("--score"));
         } else if (key == "--nms") {
@@ -146,6 +154,30 @@ bool parse_args(int argc, char** argv, Args& args, std::string& error) {
     if (args.width <= 0 || args.height <= 0 || args.fps <= 0) {
         error = "ширина, высота и fps должны быть положительными";
         return false;
+    }
+
+    // --classes: либо число, либо путь к файлу имён. Разбираем здесь, до
+    // создания объектов, чтобы ошибка была про аргументы, а не про модель.
+    const bool all_digits =
+        !args.classes.empty() &&
+        std::all_of(args.classes.begin(), args.classes.end(),
+                    [](unsigned char c) { return std::isdigit(c) != 0; });
+    if (all_digits) {
+        args.class_count = std::stoi(args.classes);
+        if (args.class_count <= 0) {
+            error = "--classes: число классов должно быть положительным";
+            return false;
+        }
+        // 80 — стандартный набор COCO: подставляем имена, чтобы подписи были
+        // читаемыми без отдельного файла.
+        if (args.class_count == static_cast<int>(coco_names().size())) {
+            args.class_names = coco_names();
+        }
+    } else {
+        if (!load_class_names(args.classes, args.class_names, error)) {
+            return false;
+        }
+        args.class_count = static_cast<int>(args.class_names.size());
     }
     return true;
 }
@@ -185,7 +217,7 @@ int main(int argc, char** argv) {
     model_config.path = args.model;
     model_config.input_size = 640;
     model_config.out_layout = args.out_layout;
-    model_config.class_count = args.classes;
+    model_config.class_count = args.class_count;
     model_config.score_threshold = args.score;
     model_config.nms_threshold = args.nms;
     model_config.threads = args.threads;
@@ -215,6 +247,11 @@ int main(int argc, char** argv) {
     }
 
     ViewOptions view;
+    view.class_names = args.class_names;  // подписи "#id имя score"
+    if (!view.class_names.empty()) {
+        LOG_INFO << "классы: " << view.class_names.size() << " имён, например "
+                 << view.class_names.front();
+    }
     // Метрики: раз в полсекунды пересчитываем скорость по приросту счётчиков
     // конвейера. last_rate сдвигается только при пересчёте, поэтому окно
     // измерения всегда ~0.5 c.
@@ -224,6 +261,18 @@ int main(int argc, char** argv) {
     double capture_fps = 0.0;
     double process_fps = 0.0;
     std::uint64_t shown = 0;
+    // Снимок берём после прогрева, но с поправкой на --max-frames: иначе при
+    // коротком прогоне кадр номер 25 просто не наступит.
+    std::uint64_t snapshot_at = 26;
+    if (args.max_frames > 0) {
+        snapshot_at = std::min<std::uint64_t>(26, static_cast<std::uint64_t>(args.max_frames));
+    }
+    bool snapshot_taken = false;
+    // Задержка «от драйвера до разметки»: именно она должна оставаться
+    // постоянной при перегрузке — это и есть смысл вытеснения в очереди.
+    double latency_first = -1.0;
+    double latency_max = 0.0;
+    double latency_sum = 0.0;
 
     while (!stop_requested() && pipeline.running()) {
         ResultPtr result;
@@ -271,6 +320,12 @@ int main(int argc, char** argv) {
         const cv::Mat overlay = draw_overlay(raw, result->instances, view);
         cv::Mat canvas = compose_side_by_side(raw, overlay);
 
+        if (latency_first < 0.0) {
+            latency_first = result->latency_ms;
+        }
+        latency_max = std::max(latency_max, result->latency_ms);
+        latency_sum += result->latency_ms;
+
         const auto& stats = pipeline.stats();
         char line[160];
         std::vector<std::string> hud;
@@ -286,13 +341,13 @@ int main(int argc, char** argv) {
         hud.emplace_back(line);
         draw_hud(canvas, hud);
 
-        // --snapshot: сохраняем первый кадр, чтобы можно было посмотреть
-        // разметку и треки без окна (например, на сервере).
-        // Снимок делаем после короткого прогрева: на первом кадре трекер ещё
-        // только создал трек, а треки появляются со второго кадра.
-        if (!args.snapshot.empty() && shown == 25) {
+        // --snapshot: сохраняем кадр с разметкой, чтобы можно было посмотреть
+        // результат без окна (например, на сервере). После прогрева, иначе
+        // трекер только успел создать треки.
+        if (!args.snapshot.empty() && !snapshot_taken && shown + 1 >= snapshot_at) {
             if (cv::imwrite(args.snapshot, canvas)) {
                 LOG_INFO << "снимок сохранён: " << args.snapshot;
+                snapshot_taken = true;
             } else {
                 LOG_WARN << "не удалось сохранить снимок: " << args.snapshot;
             }
@@ -331,5 +386,12 @@ int main(int argc, char** argv) {
     LOG_INFO << "итого: получено " << stats.captured.load() << ", обработано "
              << stats.processed.load() << ", вытеснено " << stats.dropped.load()
              << ", показано " << shown;
+    if (shown > 0) {
+        // Главная проверка realtime-схемы: задержка не должна расти со временем.
+        // Если она ползёт вверх — очередь копится, и вытеснение не работает.
+        LOG_INFO << "задержка, мс: первая " << latency_first << ", средняя "
+                 << latency_sum / static_cast<double>(shown) << ", максимальная "
+                 << latency_max;
+    }
     return 0;
 }
