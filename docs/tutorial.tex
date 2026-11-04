@@ -1,0 +1,1837 @@
+% ============================================================================
+%  videotest: учебное пособие по проекту
+%  Компиляция: xelatex tutorial.tex   (рекомендуется)
+%              pdflatex tutorial.tex  (работает, если есть babel-russian)
+%  Нужны пакеты: babel, fontspec+polyglossia (xelatex) или babel-russian
+%  (pdflatex), amsmath, amssymb, mathtools, booktabs, longtable, listings,
+%  hyperref, xcolor, geometry, titlesec, enumitem, microtype.
+%  Шрифты CMU (для xelatex): texlive-fonts-extra или пакет cm-unicode.
+% ============================================================================
+\documentclass[11pt,a4paper]{article}
+
+% --- кодировка и язык -------------------------------------------------------
+\usepackage{iftex}
+\ifPDFTeX
+  \usepackage[T2A]{fontenc}
+  \usepackage[utf8]{inputenc}
+  \usepackage[russian,english]{babel}
+\else
+  \usepackage{fontspec}
+  \usepackage{polyglossia}
+  \setdefaultlanguage{russian}
+  \setotherlanguage{english}
+  \setmainfont{CMU Serif}
+  \setsansfont{CMU Sans Serif}
+  \setmonofont{CMU Typewriter Text}
+\fi
+
+% --- математика -------------------------------------------------------------
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{bm}
+
+% --- вёрстка ----------------------------------------------------------------
+\usepackage[a4paper,margin=2.4cm]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{titlesec}
+\usepackage{microtype}
+
+% --- код --------------------------------------------------------------------
+\usepackage{listings}
+\definecolor{codebg}{gray}{0.96}
+\definecolor{codeframe}{gray}{0.75}
+\definecolor{codekw}{RGB}{0,70,140}
+\definecolor{codecomment}{RGB}{0,110,60}
+\definecolor{codestring}{RGB}{150,50,20}
+
+\lstdefinestyle{cpp}{
+  language=C++,
+  basicstyle=\ttfamily\footnotesize,
+  keywordstyle=\color{codekw}\bfseries,
+  commentstyle=\color{codecomment}\itshape,
+  stringstyle=\color{codestring},
+  backgroundcolor=\color{codebg},
+  frame=single,
+  rulecolor=\color{codeframe},
+  breaklines=true,
+  breakatwhitespace=false,
+  postbreak=\mbox{\textcolor{red}{$\hookrightarrow$}\space},
+  showstringspaces=false,
+  tabsize=4,
+  columns=fullflexible,
+  keepspaces=true,
+  extendedchars=true,
+  inputencoding=utf8,
+  literate={--}{{-{}-}}1 {<<}{{<}{<}}1 {>>}{{>}{>}}1,
+}
+\lstdefinestyle{shell}{
+  language=bash,
+  basicstyle=\ttfamily\footnotesize,
+  backgroundcolor=\color{codebg},
+  frame=single,
+  rulecolor=\color{codeframe},
+  breaklines=true,
+  showstringspaces=false,
+  columns=fullflexible,
+}
+\lstdefinestyle{cmake}{
+  basicstyle=\ttfamily\footnotesize,
+  backgroundcolor=\color{codebg},
+  frame=single,
+  rulecolor=\color{codeframe},
+  breaklines=true,
+  showstringspaces=false,
+  columns=fullflexible,
+}
+\lstset{style=cpp}
+
+% --- гиперссылки ------------------------------------------------------------
+\usepackage[hidelinks,bookmarksnumbered]{hyperref}
+
+% --- теоремы и примечания ---------------------------------------------------
+\theoremstyle{definition}
+\newtheorem{definition}{Определение}[section]
+\newtheorem{example}[definition]{Пример}
+\theoremstyle{remark}
+\newtheorem*{remark}{Замечание}
+
+% «Заметка» как среда: не требует tcolorbox и допускает абзацы внутри.
+\newenvironment{note}
+  {\par\medskip\noindent
+   \begin{minipage}{\linewidth}
+   \colorbox{codebg}{\begin{minipage}{\dimexpr\linewidth-2\fboxsep\relax}
+     \small\textbf{Замечание.}\par\vspace{1pt}\noindent\ignorespaces}
+  {\end{minipage}}\end{minipage}\par\medskip}
+
+\titleformat{\section}{\Large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{1em}{}
+
+\setlist[itemize]{topsep=2pt,itemsep=1pt,parsep=0pt}
+\setlist[enumerate]{topsep=2pt,itemsep=1pt,parsep=0pt}
+
+% ============================================================================
+\title{\textbf{videotest}\\[2mm]
+       \large Учебное пособие: архитектура C++-проекта, обработка видео\\
+       и математика компьютерного зрения}
+\author{Учебные материалы по проекту \texttt{videotest}}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+Пособие разбирает учебный проект \texttt{videotest}: захват видео с камеры
+через V4L2, инференс ONNX-модели instance-сегментации, сопровождение объектов
+фильтром Калмана и одновременный показ исходного и размеченного потоков.
+Документ рассчитан на читателя с сильной математической подготовкой и опытом
+в нейросетях, но давно не писавшего на C++. Поэтому язык C++ объясняется
+подробно: владение памятью, времена жизни объектов, многопоточность,
+система сборки. Отдельные главы посвящены математике проекта: преобразованию
+координат letterbox, декодированию выходов YOLO, подавлению пересечений (NMS),
+построению масок из прототипов, фильтру Калмана и метрикам качества.
+
+Всё изложенное соответствует коду в каталоге \texttt{src/}; ссылки на файлы
+и функции даны по ходу текста.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% ============================================================================
+\section{Введение: что делает программа}
+
+\subsection{Постановка задачи}
+
+Программа получает поток кадров с веб-камеры (\texttt{/dev/videoX}), для
+каждого кадра запускает нейросетевую модель instance-сегментации, сопоставляет
+найденные объекты между кадрами (трекинг) и выводит на экран два изображения
+рядом: слева --- исходный кадр, справа --- тот же кадр с наложенными масками,
+рамками и идентификаторами объектов.
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Источник кадров & V4L2 (Video4Linux2), прямой доступ к драйверу \\
+Модель & ONNX Runtime, YOLO-подобная сеть instance-сегментации \\
+Трекинг & фильтр Калмана + сопоставление по IoU \\
+Вывод & OpenCV HighGUI, два потока рядом \\
+Потоки & 2 рабочих + главный (отображение) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Почему именно такая архитектура}
+
+Три ограничения задают всё остальное.
+
+\begin{enumerate}
+  \item \textbf{Камера диктует темп.} При 30 кадрах в секунду новый кадр
+        появляется каждые $33{,}3$~мс, и драйвер имеет конечное число
+        внутренних буферов. Если их вовремя не возвращать, камера
+        останавливается.
+  \item \textbf{Инференс непредсказуем по времени.} Один кадр может
+        обрабатываться 8~мс, а может 40~мс --- в зависимости от содержимого,
+        загрузки CPU и модели.
+  \item \textbf{Экран должен показывать свежее.} Если обработка отстаёт,
+        разумно пропустить устаревшие кадры, а не выстраивать их в очередь.
+\end{enumerate}
+
+Отсюда всё устройство: камера и модель работают в разных потоках, между ними
+находится очередь \emph{ограниченной ёмкости}, которая при переполнении
+выбрасывает самый старый кадр. Задержка при этом остаётся постоянной, а не
+растёт линейно со временем.
+
+\subsection{Быстрый старт}
+
+\begin{lstlisting}[style=shell,escapeinside={(*@}{@)}]
+sudo apt install build-essential cmake libopencv-dev v4l-utils   (*@\#@*) OpenCV 4.5+
+./scripts/fetch_onnxruntime.sh                                   (*@\#@*) SDK в third_party/
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+ctest --test-dir build --output-on-failure
+./build/videotest --model models/yolo11n-seg.onnx --classes 80
+\end{lstlisting}
+
+Без камеры и без весов модели:
+
+\begin{lstlisting}[style=shell]
+./scripts/smoke_test.sh
+./build/videotest --synthetic --no-window --max-frames 60 \
+                  --model build/stub-raw.onnx --classes 3 --snapshot out.png
+\end{lstlisting}
+
+\subsection{Структура каталогов}
+
+\begin{lstlisting}[style=shell]
+videotest/
+  CMakeLists.txt          описание сборки
+  README.md               краткая инструкция
+  docs/                   документация
+    architecture.md       механика проекта (кратко)
+    tutorial.tex          это пособие
+  scripts/
+    fetch_onnxruntime.sh  скачивание SDK ONNX Runtime
+    make_stub_model.py    генерация модели-заглушки для тестов
+    smoke_test.sh         сквозная проверка без камеры и весов
+  src/
+    frame.hpp             структуры данных, ходящие между потоками
+    bounded_queue.hpp     очередь с вытеснением
+    logger.{hpp,cpp}      потокобезопасные логи
+    stop_flag.{hpp,cpp}   кооперативная остановка по Ctrl+C
+    main.cpp              разбор аргументов, цикл отображения
+    streams/
+      source.hpp          абстрактный интерфейс источника
+      v4l2_source.*       камера через V4L2
+      synthetic_source.*  синтетический источник (тесты)
+    model/
+      segmenter.*         ONNX: препроцессинг, декодирование, маски
+      class_names.*       имена классов (COCO или файл)
+    track/
+      tracker.*           фильтр Калмана + IoU-сопоставление
+    pipeline.*            два потока и очередь между ними
+    render/
+      renderer.*          отрисовка масок, рамок, HUD, склейка
+  tests/
+    queue_test.cpp
+    tracker_test.cpp
+\end{lstlisting}
+
+Разделение на каталоги отражает \emph{направление зависимостей}: \texttt{streams}
+и \texttt{model} не знают друг о друге, \texttt{pipeline} знает об обоих,
+\texttt{main} собирает всё вместе. Такое разложение позволяет тестировать
+трекер вообще без камеры и без модели.
+
+% ============================================================================
+\section{Как устроен C++-проект и как он собирается}
+
+Этот раздел --- для читателя, который помнит язык, но забыл инструменты.
+
+\subsection{Единицы трансляции, заголовки, линковка}
+
+Программа на C++ не компилируется целиком. Каждый файл \texttt{.cpp}
+(\emph{единица трансляции}) компилируется независимо в объектный файл
+\texttt{.o}; затем \emph{компоновщик} (linker) соединяет объектные файлы и
+библиотеки в исполняемый файл.
+
+\begin{itemize}
+  \item \textbf{Заголовочный файл} (\texttt{.hpp}) содержит \emph{объявления}:
+        типы, сигнатуры функций, шаблоны, встраиваемые (\texttt{inline})
+        функции. Он вставляется в \texttt{.cpp} директивой
+        \texttt{\#include} на этапе препроцессора.
+  \item \textbf{Файл реализации} (\texttt{.cpp}) содержит \emph{определения}:
+        тела функций, глобальные объекты.
+  \item Директива \texttt{\#pragma once} (или include guard) защищает от
+        повторного включения одного заголовка в одной единице трансляции.
+\end{itemize}
+
+\begin{remark}
+Шаблоны классов и функций определены \emph{полностью} в заголовках. Причина:
+компилятор должен видеть тело шаблона, чтобы сгенерировать код для конкретного
+типа аргумента. Именно поэтому \texttt{Queue<T>} в проекте --- один заголовок
+\texttt{bounded\_queue.hpp} без \texttt{.cpp}.
+\end{remark}
+
+\subsection{Статическая и динамическая линковка}
+
+\begin{center}
+\begin{tabular}{p{0.28\linewidth}p{0.62\linewidth}}
+\toprule
+Вид & Что происходит \\
+\midrule
+Статическая (\texttt{.a}) & Код библиотеки \emph{копируется} в исполняемый файл
+при компоновке. Файл больше, но зависимостей во время работы нет. \\
+Динамическая (\texttt{.so}) & В исполняемый файл попадает только имя символа;
+код подгружается при запуске. Обновление библиотеки не требует пересборки. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+В проекте используется оба вида: собственная библиотека
+\texttt{videotest\_core} статическая (её код всё равно нужен целиком), а
+OpenCV и ONNX Runtime --- динамические.
+
+\begin{note}
+Динамическая библиотека ищется во время выполнения, а не компиляции.
+Если \texttt{libonnxruntime.so} лежит в нестандартном каталоге, программа
+запустится с ошибкой <<cannot open shared object file>>. Решение ---
+переменная \texttt{LD\_LIBRARY\_PATH} либо \emph{rpath}, вшитый в бинарник при
+сборке (см.~\texttt{BUILD\_RPATH} в \texttt{CMakeLists.txt}).
+\end{note}
+
+\subsection{Система сборки CMake}
+
+CMake не компилирует сам: он \emph{генерирует} файлы сборки (Makefile или
+\texttt{build.ninja}) для выбранного генератора. Процесс двухфазный:
+
+\begin{lstlisting}[style=shell,escapeinside={(*@}{@)}]
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release   (*@\#@*) конфигурация
+cmake --build build -j                            (*@\#@*) сборка
+\end{lstlisting}
+
+Ключевые понятия:
+
+\begin{itemize}
+  \item \textbf{Цель (target)} --- то, что собирается: исполняемый файл,
+        библиотека или тест. Цель хранит свои свойства: исходники, флаги,
+        зависимости.
+  \item \textbf{Область видимости} \texttt{PRIVATE}/\texttt{PUBLIC}/\texttt{INTERFACE}.
+        \texttt{PUBLIC} означает <<мне нужно и всем, кто меня линкует>>.
+        В проекте \texttt{videotest\_core} объявляет зависимости
+        (\texttt{OpenCV}, \texttt{ONNXRUNTIME}) как \texttt{PUBLIC} ---
+        поэтому \texttt{videotest} и тесты получают их автоматически.
+  \item \textbf{Тип сборки} (\texttt{CMAKE\_BUILD\_TYPE}) задаёт набор флагов:
+        \texttt{Debug} ($-O0 -g$), \texttt{Release} ($-O3 -DNDEBUG$),
+        \texttt{RelWithDebInfo} ($-O2 -g$).
+\end{itemize}
+
+Минимальный фрагмент из \texttt{CMakeLists.txt} проекта:
+
+\begin{lstlisting}[style=cmake]
+find_package(OpenCV 4.5 REQUIRED COMPONENTS core imgproc imgcodecs highgui dnn video)
+find_package(Threads REQUIRED)
+
+add_library(videotest_core STATIC
+    src/logger.cpp
+    src/pipeline.cpp
+    src/track/tracker.cpp
+    ...)
+target_include_directories(videotest_core PUBLIC src "${ONNXRUNTIME_ROOT}/include")
+target_link_libraries(videotest_core PUBLIC
+    ${OpenCV_LIBS} Threads::Threads ${ONNXRUNTIME_LIBRARY})
+
+add_executable(videotest src/main.cpp)
+target_link_libraries(videotest PRIVATE videotest_core)
+\end{lstlisting}
+
+\subsection{Флаги компилятора, которые стоит понимать}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Флаг & Смысл \\
+\midrule
+\texttt{-std=c++17} & версия стандарта языка \\
+\texttt{-O2}, \texttt{-O3} & уровень оптимизации \\
+\texttt{-g} & отладочная информация (для \texttt{gdb}) \\
+\texttt{-Wall -Wextra} & включить большинство предупреждений \\
+\texttt{-fsanitize=address} & AddressSanitizer: ловит выход за границы \\
+\texttt{-fsanitize=undefined} & UBSan: ловит неопределённое поведение \\
+\texttt{-Werror} & превратить предупреждения в ошибки \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{note}
+\texttt{-fsanitize=address} --- самый быстрый способ найти причину
+\texttt{Segmentation fault}. В этом проекте именно так была найдена ошибка
+индексации в трекере: \texttt{gdb} в среде не было, но ASan указал точную
+строку (\texttt{stl\_bvector.h:96}, то есть обращение к \texttt{std::vector<bool>}
+за границей).
+\end{note}
+
+\subsection{Тестирование через CTest}
+
+\texttt{enable\_testing()} в CMake и \texttt{add\_test(NAME ... COMMAND ...)}
+регистрируют тесты; запуск --- \texttt{ctest --output-on-failure}. Проект
+сознательно обходится без фреймворков: тесты --- это обычные программы,
+возвращающие ненулевой код при ошибке.
+
+\begin{lstlisting}[escapeinside={(*@}{@)}]
+(*@\#@*)define CHECK(cond)                                                       (*@\textbackslash@*)
+    do {                                                                  (*@\textbackslash@*)
+        if (!(cond)) {                                                    (*@\textbackslash@*)
+            std::printf("  FAIL %s:%d %s(*@\textbackslash@*)n", __FILE__, __LINE__, (*@\#@*)cond);  (*@\textbackslash@*)
+            ++g_failed;                                                   (*@\textbackslash@*)
+        }                                                                 (*@\textbackslash@*)
+    } while (0)
+\end{lstlisting}
+
+Макрос \texttt{\#cond} --- приём препроцессора: аргумент превращается в
+строку, поэтому в отчёте видно само условие, а не только номер строки.
+
+\subsubsection{Главное правило: тест должен падать на ошибке}
+
+Бесполезный тест --- тот, который проходит всегда. Поэтому после написания
+теста его проверяют \emph{обратным} экспериментом: временно возвращают
+ошибочный код и убеждаются, что тест краснеет.
+
+В проекте так проверены оба новых теста:
+
+\begin{center}
+\begin{tabular}{p{0.32\linewidth}p{0.28\linewidth}p{0.30\linewidth)}
+\toprule
+Что тестируется & Как ломали & Результат \\
+\midrule
+Сохранение \texttt{track\_id} при движении & убрали
+\texttt{kalman.predict()} & 3 проваленных проверки \\
+Баланс очереди & при переполнении выбрасывали
+\emph{новый} элемент вместо старого & 2 проваленных проверки \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ============================================================================
+\section{Язык C++, который используется в проекте}
+
+\subsection{Управление памятью: стек, куча, времена жизни}
+
+В C++ нет сборщика мусора. Объект, созданный в автоматической памяти (на
+стеке), уничтожается при выходе из области видимости; объект в динамической
+памяти (в куче, \texttt{new}) живёт до явного \texttt{delete}.
+
+\begin{lstlisting}
+void f() {
+    std::string s = "локальная";       // стек: живёт до конца функции
+    auto* p = new std::string("куча"); // куча: живёт до delete p
+    delete p;                          // иначе утечка
+}   // s уничтожен автоматически
+\end{lstlisting}
+
+Ручное \texttt{new}/\texttt{delete} в современном C++ почти не применяется:
+его заменяют \emph{умные указатели} и принцип RAII.
+
+\subsection{RAII: ресурс --- это объект}
+
+\begin{definition}
+\textbf{RAII} (Resource Acquisition Is Initialization) --- приём, при котором
+владение ресурсом (память, файл, блокировка, сокет) привязано к времени жизни
+объекта: ресурс захватывается в конструкторе и освобождается в деструкторе.
+\end{definition}
+
+Пример из проекта --- деструктор источника видео:
+
+\begin{lstlisting}
+V4l2Source::~V4l2Source() {
+    close();          // STREAMOFF -> munmap -> ::close
+}
+\end{lstlisting}
+
+Порядок здесь не случаен: нельзя размечать (mmap) память уже закрытого
+дескриптора. RAII делает этот порядок единственно возможным.
+
+\subsection{Умные указатели}
+
+\begin{center}
+\begin{tabular}{p{0.22\linewidth}p{0.34\linewidth}p{0.34\linewidth}}
+\toprule
+Тип & Владение & Когда применяется \\
+\midrule
+\texttt{std::unique\_ptr<T>} & единоличное & ресурс принадлежит одному объекту \\
+\texttt{std::shared\_ptr<T>} & разделяемое, со счётчиком ссылок &
+данные нужны нескольким владельцам \\
+\texttt{std::weak\_ptr<T>} & не владеет & наблюдение без продления жизни \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsubsection{Почему в конвейере именно \texttt{shared\_ptr}}
+
+Кадр нужен одновременно в двух местах: он лежит в очереди, и на него же
+ссылается результат обработки. При этом заранее неизвестно, кто отпустит его
+последним.
+
+\begin{lstlisting}
+struct Frame {
+    cv::Mat image;
+    std::uint64_t id = 0;
+    std::chrono::steady_clock::time_point captured;
+};
+struct Result {
+    std::shared_ptr<const Frame> frame;   // разделяемое владение, только чтение
+    std::vector<Instance> instances;
+};
+
+using FramePtr  = std::shared_ptr<Frame>;
+using ResultPtr = std::shared_ptr<Result>;
+\end{lstlisting}
+
+Копия \texttt{shared\_ptr} увеличивает счётчик ссылок атомарно; уничтожение
+последней копии освобождает объект. Пиксели при этом \emph{не копируются}:
+\texttt{cv::Mat} внутри \texttt{Frame} сам является дешёвым дескриптором с
+разделяемым буфером.
+
+\subsubsection{Почему \texttt{shared\_ptr<const Frame>}}
+
+Это ключевой приём всей потокобезопасности проекта. Тип \texttt{const Frame}
+делает кадр \emph{неизменяемым} для всех, кто держит указатель. Пока
+отрисовывающий поток читает пиксели, обрабатывающий поток уже занят следующим
+кадром --- но записать в этот кадр он не может, потому что \texttt{const}.
+Гонки данных нет \emph{без единого мьютекса} вокруг самих данных.
+
+\begin{note}
+\texttt{const} в C++ защищает от записи через данный указатель, но не
+гарантирует неизменность объекта вообще. Здесь этого достаточно, потому что
+никто больше не имеет неконстантного указателя на тот же \texttt{Frame}.
+\end{note}
+
+\subsection{Ссылки, копирование, перемещение}
+
+\begin{itemize}
+  \item \texttt{const T\&} --- ссылка без копирования, без права изменять.
+        Основной способ передавать большие объекты.
+  \item \texttt{T\&} --- ссылка с правом изменять (выходной параметр).
+  \item \texttt{std::move(x)} --- не перемещает сам по себе, а \emph{разрешает}
+        вызвать перемещающий конструктор: содержимое объекта переходит в новый,
+        исходный остаётся в допустимом, но неопределённом состоянии.
+\end{itemize}
+
+\begin{lstlisting}
+// возврат через выходной параметр: без копирования и без исключений
+bool grab(FramePtr& out, std::string& error);
+\end{lstlisting}
+
+Такой стиль (функция возвращает \texttt{bool}, результат --- через ссылку,
+текст ошибки --- тоже через ссылку) выбран потому, что он не требует
+исключений на границе потоков и хорошо читается в циклах.
+
+\subsection{Классы, виртуальные функции, интерфейсы}
+
+Абстрактный класс \texttt{Source} задаёт контракт:
+
+\begin{lstlisting}
+class Source {
+public:
+    virtual ~Source() = default;
+    virtual bool open(std::string& error) = 0;
+    virtual bool grab(FramePtr& out, std::string& error) = 0;
+    virtual int width() const = 0;
+    virtual int height() const = 0;
+};
+\end{lstlisting}
+
+\begin{itemize}
+  \item \texttt{= 0} делает функцию \emph{чисто виртуальной}: класс нельзя
+        создать, только унаследовать от него.
+  \item \texttt{virtual \~{}Source() = default} обязателен: удаление объекта
+        производного класса через указатель на базовый без виртуального
+        деструктора --- неопределённое поведение.
+  \item Вызов виртуальной функции идёт через таблицу виртуальных функций
+        (vtable), то есть стоит одного косвенного перехода. Для вызова раз в
+        кадр это несущественно.
+\end{itemize}
+
+\subsection{Шаблоны}
+
+Очередь --- шаблон класса, потому что одна и та же логика нужна для
+\texttt{FramePtr} и \texttt{ResultPtr}:
+
+\begin{lstlisting}
+template <class T>
+class Queue {
+public:
+    std::size_t push(T value);
+    template <class Rep, class Period>
+    std::optional<T> pop(std::chrono::duration<Rep, Period> timeout);
+};
+\end{lstlisting}
+
+Второй шаблон (шаблонный метод) нужен, чтобы принимать любой тип длительности:
+\texttt{100ms}, \texttt{std::chrono::milliseconds(10)} и т.п.
+
+\subsection{\texttt{std::optional}: отсутствие значения как тип}
+
+\begin{lstlisting}
+std::optional<T> pop(...);   // либо значение, либо «данных нет»
+\end{lstlisting}
+
+Возвращать <<магическое>> значение (например, пустой указатель) можно, но
+тип не говорит об этом вызывающему. \texttt{std::optional} делает отсутствие
+значения частью типа, и компилятор заставляет его обработать.
+
+\subsection{Идиома pimpl, или сокрытие зависимости}
+
+Заголовок \texttt{segmenter.hpp} не включает \texttt{onnxruntime\_cxx\_api.h}:
+этот заголовок тяжёлый и содержит макросы, которые не должны протекать во все
+единицы трансляции. Вместо этого объявлена неполная структура:
+
+\begin{lstlisting}
+struct OrtHolder;          // объявление без определения
+OrtHolder* ort_ = nullptr; // указатель на неё
+\end{lstlisting}
+
+Определение живёт в \texttt{.cpp}:
+
+\begin{lstlisting}
+struct Segmenter::OrtHolder {
+    Ort::Env env{ORT_LOGGING_LEVEL_ERROR, "videotest"};
+    Ort::SessionOptions options;
+    std::unique_ptr<Ort::Session> session;
+    Ort::MemoryInfo memory{"Cpu", OrtArenaAllocator, 0, OrtMemTypeDefault};
+};
+\end{lstlisting}
+
+\begin{note}
+Здесь ручное \texttt{new}/\texttt{delete} (в деструкторе \texttt{Segmenter}).
+Это осознанный компромисс. С \texttt{std::unique\_ptr<OrtHolder>} требуется
+полное определение типа там, где генерируется код уничтожения, то есть в
+\texttt{.cpp}. Технически это решается объявлением деструктора в заголовке и
+его определением в \texttt{.cpp} (что и сделано), но тогда
+\texttt{unique\_ptr} не даёт выигрыша в читаемости: деструктор всё равно
+написан вручную. Вариант с указателем явнее показывает, что владение
+единоличное и освобождается в одном месте.
+\end{note}
+
+\subsection{Обработка ошибок и границы потоков}
+
+В C++ исключение, покинувшее поток, вызывает \texttt{std::terminate()}.
+Поэтому на границе рабочего потока исключения \emph{переводятся в код
+возврата}:
+
+\begin{lstlisting}
+try {
+    ... session->Run(...);
+} catch (const Ort::Exception& e) {
+    error = std::string("ONNX Runtime: ") + e.what();
+    return false;      // исключение не уходит в std::thread
+}
+\end{lstlisting}
+
+% ============================================================================
+\section{Данные, ходящие между потоками}
+
+\subsection{Три структуры и их инварианты}
+
+\begin{center}
+\begin{tabular}{p{0.16\linewidth}p{0.76\linewidth}}
+\toprule
+Тип & Инварианты \\
+\midrule
+\texttt{Frame} & \texttt{image} --- BGR, \texttt{CV\_8UC3}; \texttt{captured} ---
+момент получения от драйвера, монотонные часы. \\
+\texttt{Instance} & \texttt{box} в целых пикселях исходного кадра;
+\texttt{mask} либо пустая, либо \texttt{CV\_8UC1} размера кадра со значениями
+0/255; \texttt{track\_id = -1} до первого присвоения. \\
+\texttt{Result} & \texttt{frame} --- неизменяемый указатель на кадр; вектор
+\texttt{instances} отсортирован по убыванию уверенности. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{note}
+Почему \texttt{steady\_clock}, а не \texttt{system\_clock}: последний может быть
+переведён назад (синхронизация времени, переход на летнее время), и тогда
+<<задержка>> окажется отрицательной. \texttt{steady\_clock} гарантированно
+монотонен.
+\end{note}
+
+\begin{remark}
+Почему координаты целые: рисование всё равно округляет, а целочисленные
+операции дешевле. \texttt{cv::Rect2f} применяется только внутри
+преобразований, где важна дробная точность.
+\end{remark}
+
+% ============================================================================
+\section{Очередь с вытеснением: механизм и обоснование}
+
+\subsection{Постановка задачи}
+
+Нужен буфер между производителем (камера, 30 кадров/с, ждать нельзя) и
+потребителем (модель, время обработки переменное). Требования:
+
+\begin{enumerate}
+  \item производитель никогда не блокируется;
+  \item потребитель получает \emph{свежие} данные;
+  \item задержка <<попадания в обработку>> ограничена константой;
+  \item остановка программы не должна зависать на ожидании данных.
+\end{enumerate}
+
+Классическая очередь FIFO без ограничения размера нарушает пункты 2 и 3:
+если модель медленнее камеры, длина очереди растёт, и обрабатывается кадр
+десятисекундной давности.
+
+\subsection{Политика: вытеснение самого старого}
+
+\begin{definition}[Очередь с вытеснением]
+Очередь ёмкости $C$: операция \textsc{push} всегда завершается успешно. Если
+очередь заполнена, предварительно удаляется элемент, поступивший раньше всех.
+Операция \textsc{pop} возвращает самый старый элемент либо, при таймауте, ничего.
+\end{definition}
+
+Точное соотношение баланса: в любой момент
+\[
+  N \;=\; M \;+\; D \;+\; |Q|,
+\]
+где $N$ --- сколько раз вызван \textsc{push}, $M$ --- сколько раз успешно
+вызван \textsc{pop}, $D$ --- сколько элементов вытеснено (это число возвращает
+\textsc{push}), $|Q|$ --- текущее содержимое очереди. После того как
+производитель закончил и очередь опустела, $|Q| = 0$ и
+\[
+  D = N - M .
+\]
+Именно это тождество проверяет тест \texttt{queue\_tests}.
+
+\subsection{Реализация}
+
+\begin{lstlisting}
+template <class T>
+class Queue {
+public:
+    explicit Queue(std::size_t capacity)
+        : capacity_(capacity == 0 ? 1 : capacity) {}
+
+    std::size_t push(T value) {
+        std::size_t dropped = 0;
+        {
+            std::lock_guard lock(mutex_);
+            if (items_.size() >= capacity_) {
+                items_.pop_front();
+                ++dropped;
+            }
+            items_.push_back(std::move(value));
+        }
+        not_empty_.notify_one();
+        return dropped;
+    }
+
+    template <class Rep, class Period>
+    std::optional<T> pop(std::chrono::duration<Rep, Period> timeout) {
+        std::unique_lock lock(mutex_);
+        not_empty_.wait_for(lock, timeout, [this] { return !items_.empty(); });
+        if (items_.empty()) return std::nullopt;
+        T value = std::move(items_.front());
+        items_.pop_front();
+        return value;
+    }
+private:
+    mutable std::mutex mutex_;
+    std::condition_variable not_empty_;
+    std::deque<T> items_;
+    const std::size_t capacity_;
+};
+\end{lstlisting}
+
+Разберём каждое решение.
+
+\subsubsection{Почему \texttt{std::deque}, а не \texttt{std::vector}}
+
+Вытеснение удаляет элемент из \emph{начала}, добавление идёт в \emph{конец}.
+\texttt{std::deque} поддерживает обе операции за $O(1)$; \texttt{std::vector}
+удаление из начала делает за $O(n)$. При ёмкости 2--4 это неважно по
+абсолютному времени, но выбор структуры должен соответствовать операциям.
+
+\subsubsection{Почему \texttt{std::mutex} и \texttt{condition\_variable}}
+
+Мьютекс защищает инвариант <<\texttt{items\_} согласован>>. Условная переменная
+позволяет потребителю \emph{спать}, а не крутиться в цикле, расходуя ядро.
+
+\subsubsection{Почему \texttt{unique\_lock}, а не \texttt{lock\_guard}}
+
+\texttt{wait\_for} должен \emph{отпустить} мьютекс на время сна и снова взять
+его после пробуждения. \texttt{std::unique\_lock} это умеет,
+\texttt{std::lock\_guard} --- нет.
+
+\subsubsection{Почему предикат обязателен}
+
+\begin{lstlisting}
+not_empty_.wait_for(lock, timeout, [this] { return !items_.empty(); });
+\end{lstlisting}
+
+Условная переменная может проснуться без уведомления (\emph{ложное
+пробуждение}) и может быть разбужена не тем событием. Без предиката код
+продолжил бы работу с пустой очередью. С предикатом \texttt{wait\_for}
+возвращается только когда условие истинно либо истёк таймаут.
+
+\subsubsection{Почему уведомление вне блокировки}
+
+\begin{lstlisting}
+{
+    std::lock_guard lock(mutex_);
+    ...
+}                 // блокировка снята
+not_empty_.notify_one();   // уведомляем после
+\end{lstlisting}
+
+Если уведомить под мьютексом, разбуженный поток сразу же упрётся в
+заблокированный мьютекс (\emph{thundering herd} / лишнее переключение).
+Уведомление после снятия блокировки этого избегает.
+
+\subsubsection{Почему таймаут в \texttt{pop}}
+
+Без таймаута поток-обработчик, ожидая кадр, никогда не узнал бы о том, что
+программу просят остановить. Таймаут 100 мс означает: <<даже если данных нет,
+проснись и проверь флаг остановки>>.
+
+\subsection{Ёмкость 2: почему именно столько}
+
+\begin{itemize}
+  \item Ёмкость 1: пока потребитель обрабатывает кадр, производитель уже
+        положил следующий --- один кадр гарантированно ждёт. Любая задержка
+        сразу приводит к вытеснению.
+  \item Ёмкость 2: допускает кратковременную неравномерность (один кадр в
+        работе, один в запасе), при этом задержка ограничена сверху временем
+        двух кадров.
+  \item Ёмкость $\gg 2$: задержка растёт пропорционально, смысл вытеснения
+        теряется.
+\end{itemize}
+
+\begin{note}
+Число вытеснений выведено в HUD как \texttt{dropped}. Это прямой индикатор:
+если счётчик растёт, модель не успевает за камерой, и на экране видно меньше
+кадров, чем снимает камера. Именно так и должно быть --- обработка не
+тормозит приём.
+\end{note}
+
+% ============================================================================
+\section{Потоки и синхронизация}
+
+\subsection{Схема}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Поток & Что делает & Куда пишет \\
+\midrule
+1. Захват & \texttt{source.grab()} в цикле & \texttt{Queue<FramePtr>}(2) \\
+2. Обработка & \texttt{pop()} $\to$ \texttt{infer()} $\to$ \texttt{tracker.update()} &
+\texttt{Queue<ResultPtr>}(2) \\
+Главный & \texttt{pop(10\,ms)} $\to$ отрисовка $\to$ \texttt{imshow} & экран \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Порядок остановки --- источник тонкой ошибки}
+
+\begin{lstlisting}
+void Pipeline::stop() {
+    running_.store(false, std::memory_order_relaxed);  // 1. снять флаг
+    if (capture_thread_.joinable()) capture_thread_.join();   // 2. дождаться
+    if (process_thread_.joinable()) process_thread_.join();
+}
+\end{lstlisting}
+
+Если поменять местами, получится \emph{дедлок}: \texttt{join} ждёт завершения
+потока, а поток крутится по флагу, который ещё не снят. В первой версии эта
+ошибка присутствовала и проявлялась как \texttt{terminate called without an
+active exception}.
+
+\begin{note}
+Почему \texttt{terminate}: \texttt{std::thread}, который остаётся
+\emph{joinable} при разрушении, вызывает \texttt{std::terminate}. Разрушение
+происходило по выходу из \texttt{main} при уже завершившихся циклах.
+\end{note}
+
+\subsection{Атомарные счётчики}
+
+Метрики (получено, обработано, вытеснено) читаются главным потоком и
+пишутся рабочими. Здесь достаточно \texttt{std::atomic<std::uint64\_t>}:
+операция \texttt{fetch\_add} не требует блокировки. Это дешевле мьютекса
+и не создаёт конкуренции на кадр.
+
+\subsection{Остановка по Ctrl+C}
+
+Обработчик сигнала обязан быть \emph{асинхронно-безопасным}: в нём нельзя
+брать мьютексы, вызывать \texttt{printf}, выделять память. Единственное
+допустимое действие --- записать в атомарный флаг:
+
+\begin{lstlisting}
+extern "C" void on_signal(int) {
+    stop_flag().store(true, std::memory_order_relaxed);
+}
+\end{lstlisting}
+
+Рабочие циклы сами проверяют флаг: \texttt{poll()} возвращается по таймауту
+500 мс, \texttt{Queue::pop()} --- по таймауту 100 мс.
+
+% ============================================================================
+\section{Захват видео через V4L2}
+
+\subsection{Что такое V4L2}
+
+Video4Linux2 --- набор системных вызовов \texttt{ioctl} для работы с
+видеоустройствами в Linux. Камера представляется файлом \texttt{/dev/videoX};
+управление идёт командами \texttt{VIDIOC\_*}.
+
+\subsection{Последовательность вызовов}
+
+\begin{lstlisting}[style=shell]
+open(/dev/videoX, O_RDWR | O_NONBLOCK)
+  VIDIOC_QUERYCAP       есть ли захват и потоковая передача
+  VIDIOC_S_FMT          задать формат и размер
+  VIDIOC_S_PARM         запросить частоту кадров
+  VIDIOC_REQBUFS        выделить N буферов драйвера (MMAP)
+  VIDIOC_QUERYBUF + mmap  спроецировать буферы в своё адресное пространство
+  VIDIOC_QBUF x N       отдать буферы драйверу
+  VIDIOC_STREAMON       запустить поток
+цикл: poll() -> VIDIOC_DQBUF -> конвертация -> VIDIOC_QBUF
+\end{lstlisting}
+
+\subsection{Тонкости, без которых не работает}
+
+\begin{enumerate}
+  \item \textbf{\texttt{device\_caps}, а не \texttt{capabilities}.} У камеры с
+        микрофоном флаг \texttt{capabilities} описывает всё устройство. Реальные
+        возможности конкретного узла лежат в \texttt{device\_caps}, и проверка
+        только по \texttt{capabilities} ложно отвергает часть камер.
+  \item \textbf{\texttt{poll} перед \texttt{DQBUF}.} Файл открыт с
+        \texttt{O\_NONBLOCK}, поэтому \texttt{DQBUF} без данных вернул бы
+        \texttt{EAGAIN}, и пришлось бы крутиться в busy-loop, съедая ядро.
+  \item \textbf{\texttt{QBUF} обязателен всегда.} После \texttt{DQBUF} буфер
+        принадлежит программе. Не вернув его, через \texttt{buffer\_count}
+        кадров драйверу нечего заполнять, и камера встанет.
+  \item \textbf{\texttt{bytesperline} (шаг строки).} Длина строки в памяти может
+        быть больше $\text{width} \times \text{bpp}$ из-за выравнивания.
+        Матрица создаётся с явным шагом
+        (\texttt{cv::Mat(height, width, CV\_8UC2, data, step)}); без него
+        картинка <<поедет>> по диагонали.
+  \item \textbf{\texttt{EINTR}.} Системный вызов может быть прерван сигналом
+        (например, нашим SIGINT). Это не ошибка устройства, поэтому
+        \texttt{ioctl} повторяется (в проекте --- шаблонная обёртка
+        \texttt{xioctl}, принимающая переменное число аргументов):
+        \begin{lstlisting}
+template <class... Args>
+int xioctl(int fd, unsigned long request, Args... args) {
+    int result;
+    do {
+        result = ::ioctl(fd, request, args...);
+    } while (result == -1 && errno == EINTR);
+    return result;
+}
+        \end{lstlisting}
+\end{enumerate}
+
+\subsection{Почему mmap, а не read}
+
+При \texttt{read()} драйвер копирует кадр в буфер пользователя при каждом
+вызове. При mmap память драйвера отображается в адресное пространство
+процесса: копия остаётся только при конвертации формата (её делает OpenCV).
+На 1280$\times$720 и 30 кадрах в секунду это заметная разница.
+
+\subsection{MJPG и YUYV}
+
+\begin{center}
+\begin{tabular}{p{0.12\linewidth}p{0.38\linewidth}p{0.40\linewidth}}
+\toprule
+Формат & Хранение & Следствия \\
+\midrule
+MJPG & каждый кадр --- JPEG & меньше по шине USB, но требует декодирования
+(единицы мс); нет потерь в \texttt{Mat}, потери в JPEG \\
+YUYV & 2 байта на пиксель, подвыборка цветности & не требует декодирования,
+но по USB~2.0 не всегда влезает 1280$\times$720 при 30 кадрах/с \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{remark}
+Формат в проекте задаётся \emph{явно} (\texttt{--format MJPG|YUYV}).
+Автоподбор убран сознательно: он скрывает, что реально поддерживает устройство.
+Если драйвер подменил формат, программа выдаёт ошибку с подсказкой
+\texttt{v4l2-ctl --list-formats-ext}.
+\end{remark}
+
+% ============================================================================
+\section{Модель: от тензора к объектам}
+
+\subsection{Препроцессинг: letterbox}
+
+Сеть ждёт квадратный вход $S \times S$ (обычно $S = 640$), значения
+$\mathbb{R}^{3 \times S \times S}$ в диапазоне $[0,1]$, порядок каналов RGB.
+Кадр имеет размер $W \times H$.
+
+\subsubsection{Математика}
+
+Вычисляется масштаб
+\[
+  s = \min\left(\frac{S}{W}, \frac{S}{H}\right),
+\]
+новый размер $W' = \lfloor sW \rceil$, $H' = \lfloor sH \rceil$, и отступы
+\[
+  p_x = \frac{S - W'}{2}, \qquad p_y = \frac{S - H'}{2}.
+\]
+
+\begin{definition}[Прямое преобразование]
+Пиксель кадра $(u,v)$ отображается в точку сети
+\[
+  x = s u + p_x, \qquad y = s v + p_y.
+\]
+\end{definition}
+
+\begin{definition}[Обратное преобразование]
+По координатам сети $(x,y)$ координата кадра восстанавливается как
+\[
+  u = \frac{x - p_x}{s}, \qquad v = \frac{y - p_y}{s}.
+\]
+\end{definition}
+
+Пара $(s, p_x, p_y)$ --- единственное, что нужно сохранить при прямом ходе,
+чтобы правильно вернуть координаты обратно. Именно поэтому
+\texttt{preprocess()} возвращает \texttt{scale} и \texttt{pad} по ссылке.
+
+\begin{note}
+Почему нельзя просто \texttt{resize} в квадрат: при разных $W$ и $H$ это
+даёт \emph{разные} масштабы по осям, и обратное преобразование $x$ и $y$
+должно выполняться с разными коэффициентами. Забыть об одном из них ---
+классическая ошибка, дающая сдвиг, растущий к краю кадра.
+\end{note}
+
+Отступы заполняются значением 114: это стандартное значение YOLO при
+обучении, и сеть к нему привыкла.
+
+\subsubsection{Приведение к входу сети}
+
+\begin{equation}
+  \text{blob}[c][y][x] = \frac{\text{canvas}[y][x][c']}{255},
+  \qquad c' = \begin{cases}
+    2 - c, & \text{для RGB (swapRB)},\\
+    c, & \text{иначе},
+  \end{cases}
+\end{equation}
+где $c \in \{0,1,2\}$ --- индекс канала в NCHW. Функция
+\texttt{cv::dnn::blobFromImage} выполняет и перестановку осей HWC$\to$NCHW,
+и деление на 255, и перевод BGR$\to$RGB.
+
+\subsection{Выходы модели}
+
+\subsubsection{Формат \texttt{raw} (YOLOv8-seg, YOLO11-seg)}
+
+\[
+  \text{output0} \in \mathbb{R}^{1 \times (4 + n_c + 32) \times N},
+  \qquad
+  \text{output1} \in \mathbb{R}^{1 \times 32 \times h \times w},
+\]
+где $n_c$ --- число классов, $N$ --- число якорей (8400 при $S=640$),
+$h, w$ --- размер карты прототипов (160 при $S = 640$).
+
+Раскладка \emph{канал-мажорная}: значение канала $c$ для якоря $a$ лежит по
+индексу
+\[
+  \text{idx}(c,a) = c \cdot N + a .
+\]
+
+Столбцы: $c_x, c_y, w, h$, затем $n_c$ вероятностей классов, затем 32
+коэффициента масок.
+
+\subsubsection{Формат \texttt{nms} (YOLO26, end-to-end)}
+
+\[
+  \text{output0} \in \mathbb{R}^{1 \times M \times (6 + 32)}, \qquad M = 300,
+\]
+столбцы: $x_1, y_1, x_2, y_2$, уверенность, номер класса, 32 коэффициента.
+Подавление пересечений уже выполнено внутри графа.
+
+\begin{note}
+Повторно применять NMS к выходу \texttt{nms} нельзя: это удалит легитимно
+перекрывающиеся объекты, которые сеть намеренно оставила.
+\end{note}
+
+\subsection{Декодирование и уверенность}
+
+Для каждого якоря $a$ уверенность класса определяется как максимум по классам:
+\[
+  (\hat{s}, \hat{k}) = \bigl(\max_{c} p_{c,a},\; \arg\max_{c} p_{c,a}\bigr).
+\]
+Якорь отбрасывается, если $\hat{s} < \theta_{\text{score}}$ (порог 0.35 по
+умолчанию) либо если ширина/высота неположительны.
+
+\subsection{Подавление пересечений (NMS)}
+
+\subsubsection{Метрика IoU}
+
+\begin{definition}[IoU, Intersection over Union]
+Для прямоугольников $A$ и $B$
+\[
+  \mathrm{IoU}(A,B) = \frac{|A \cap B|}{|A \cup B|}
+  = \frac{|A \cap B|}{|A| + |B| - |A \cap B|}.
+\]
+\end{definition}
+
+Для прямоугольников, выровненных по осям, площади вычисляются через
+пересечение проекций:
+\[
+  |A \cap B| = \max(0, x_2^{\cap} - x_1^{\cap}) \cdot \max(0, y_2^{\cap} - y_1^{\cap}),
+\]
+\[
+  x_1^{\cap} = \max(x_1^A, x_1^B),\quad x_2^{\cap} = \min(x_2^A, x_2^B),
+\]
+и аналогично по $y$. Знаменатель нулевым быть не может (площади
+положительны), но в коде предусмотрена защита от деления на ноль для
+вырожденных боксов.
+
+\subsubsection{Алгоритм}
+
+\begin{enumerate}
+  \item Отсортировать детекции по убыванию уверенности.
+  \item Взять лучшую непогашенную детекцию, оставить её.
+  \item Погасить все следующие детекции \emph{того же класса} с
+        $\mathrm{IoU} > \theta_{\text{nms}}$ (0.45 по умолчанию).
+  \item Повторять, пока есть непогашенные.
+\end{enumerate}
+
+\begin{note}
+Подавление \emph{class-aware} принципиально: человек и чашка часто
+перекрываются. Подавление по всем классам склеило бы их в один объект.
+Сложность алгоритма --- $O(n^2)$ по числу детекций после порога уверенности;
+на практике $n$ невелико (десятки).
+\end{note}
+
+\subsection{Маски: линейная комбинация прототипов}
+
+Сеть не выдаёт маску на объект. Она выдаёт:
+\begin{itemize}
+  \item базис из 32 <<мягких>> масок (прототипов) $P_k \in
+        \mathbb{R}^{h \times w}$, $k = 1..32$;
+  \item для каждого объекта --- 32 коэффициента $e_k$.
+\end{itemize}
+
+Маска объекта определяется как
+\[
+  M(x,y) = \sigma\Bigl(\sum_{k=1}^{32} e_k \, P_k(y,x)\Bigr),
+  \qquad \sigma(z) = \frac{1}{1 + e^{-z}} .
+\]
+
+\subsubsection{Порог без вычисления сигмоиды}
+
+Условие $\sigma(z) > t$ эквивалентно
+\[
+  z > \ln\frac{t}{1-t} =: \operatorname{logit}(t).
+\]
+При $t = 0.5$ порог равен нулю. Это позволяет заменить $h \cdot w$
+вычислений экспоненты одним сравнением:
+
+\begin{lstlisting}
+const float logit = std::log(config_.mask_threshold / (1.0f - config_.mask_threshold));
+cv::compare(resized, logit, binary, cv::CMP_GT);
+\end{lstlisting}
+
+\subsubsection{Приведение маски к кадру}
+
+Прототипы имеют размер $h \times w$ (160), что соответствует входу сети
+$S \times S$. Бокс объекта задан в координатах сети. Поэтому:
+
+\begin{enumerate}
+  \item линейная комбинация даёт маску $h \times w$;
+  \item обрезаем её по боксу в масштабе прототипов: коэффициенты
+        $\rho_x = w/S$, $\rho_y = h/S$;
+  \item масштабируем обрезанное к размеру бокса \emph{в пикселях кадра};
+  \item сравниваем с логит-порогом;
+  \item вставляем в пустое изображение размера кадра.
+\end{enumerate}
+
+% ============================================================================
+\section{Трекинг: фильтр Калмана и сопоставление}
+
+\subsection{Зачем нужен трекер}
+
+Детектор работает независимо на каждом кадре:
+\begin{itemize}
+  \item рамка <<дрожит>> из-за шума сети;
+  \item на части кадров объект не детектируется вовсе (перекрытие, размытие);
+  \item нет понятия <<тот же объект>> --- только множество рамок.
+\end{itemize}
+
+Трекер решает три задачи: сглаживание, предсказание при пропуске детекции и
+присвоение устойчивого идентификатора.
+
+\subsection{Модель состояния}
+
+\begin{definition}
+Вектор состояния трека
+\[
+  \mathbf{x} = (c_x, c_y, w, h, v_x, v_y, v_w, v_h)^\top \in \mathbb{R}^8,
+\]
+где первые четыре компоненты --- центр и размеры рамки, последние четыре ---
+их скорости.
+\end{definition}
+
+\begin{definition}[Модель равномерного движения]
+Матрица перехода
+\[
+  F = \begin{pmatrix}
+    I_4 & I_4 \\
+    0   & I_4
+  \end{pmatrix} \in \mathbb{R}^{8\times 8},
+\]
+то есть $\mathbf{x}_{t+1} = F\mathbf{x}_t$ даёт
+$c_x \leftarrow c_x + v_x$ и т.д.
+\end{definition}
+
+\begin{definition}[Модель измерений]
+Детектор сообщает только положение и размер, поэтому
+\[
+  H = \begin{pmatrix} I_4 & 0 \end{pmatrix} \in \mathbb{R}^{4\times 8},
+  \qquad \mathbf{z}_t = H\mathbf{x}_t + \mathbf{v}_t .
+\]
+\end{definition}
+
+\subsection{Уравнения фильтра}
+
+Фильтр Калмана поддерживает оценку $\hat{\mathbf{x}}$ и её ковариацию $P$.
+
+\paragraph{Предсказание.}
+\begin{align}
+  \hat{\mathbf{x}}^-_t &= F \hat{\mathbf{x}}_{t-1}, \\
+  P^-_t &= F P_{t-1} F^\top + Q .
+\end{align}
+
+\paragraph{Коррекция по измерению $\mathbf{z}_t$.}
+\begin{align}
+  K_t &= P^-_t H^\top \bigl(H P^-_t H^\top + R\bigr)^{-1}, \\
+  \hat{\mathbf{x}}_t &= \hat{\mathbf{x}}^-_t + K_t\bigl(\mathbf{z}_t - H\hat{\mathbf{x}}^-_t\bigr), \\
+  P_t &= (I - K_t H) P^-_t .
+\end{align}
+
+Здесь $Q$ --- ковариация шума процесса, $R$ --- ковариация шума измерений.
+В проекте обе заданы диагональными:
+\[
+  Q = 10^{-2} I_8, \qquad R = 10^{-1} I_4, \qquad P_0 = I_8 .
+\]
+
+\subsection{Смысл матрицы усиления}
+
+Матрица $K_t$ определяет, насколько доверять новому измерению. Если
+$P^- \gg R$ (неопределённость велика, измерения точны), то $K \to I$ и оценка
+почти равна измерению. Если $P^- \ll R$ (оценка уверенна, измерения шумны),
+$K \to 0$ и оценка почти не меняется.
+
+\paragraph{Почему нельзя заменить предсказание на $F\mathbf{x}$.}
+Вторая строка, $P^- = FPF^\top + Q$, обязательна. Она \emph{увеличивает}
+неопределённость перед новым измерением. Без неё $P$ не растёт, $K$ остаётся
+крошечным, и коррекция почти не сдвигает состояние: трек <<залипает>> на
+начальном положении. В проекте эта ошибка присутствовала и проявлялась так:
+объект уезжал, IoU с его рамкой падал ниже порога, трек терялся, и
+идентификатор пересоздавался почти каждый кадр.
+
+\begin{note}
+Практический вывод, зафиксированный тестом \texttt{tracker\_tests}: объект,
+смещающийся на 15 пикселей за кадр, обязан сохранить свой идентификатор на
+протяжении 25 кадров. Без вызова \texttt{cv::KalmanFilter::predict()} тест
+падает.
+\end{note}
+
+\subsection{Сопоставление детекций и треков}
+
+\begin{enumerate}
+  \item Для каждой пары (детекция, трек) вычисляется $\mathrm{IoU}$.
+  \item Пары с $\mathrm{IoU} \ge 0.3$ сортируются по убыванию.
+  \item Жадно выбираются пары без повторов: одна детекция --- один трек.
+  \item Сопоставленные треки корректируются измерением, получают
+        прежний идентификатор.
+  \item Несопоставленные детекции создают новые треки с новым идентификатором.
+  \item Треки без детекции увеличивают счётчик пропусков; при превышении
+        \texttt{max\_age} = 15 удаляются.
+\end{enumerate}
+
+\begin{note}
+Жадное сопоставление --- упрощение по сравнению с венгерским алгоритмом
+(оптимальным по суммарному IoU). На 10--50 объектах разница в качестве мала,
+а код проще на порядок. Замена локализована в одной функции.
+\end{note}
+
+\subsection{Обоснование выбора порогов}
+
+\begin{itemize}
+  \item $\mathrm{IoU} \ge 0.3$: рамки соседних кадров при 30 кадрах/с
+        перекрываются сильнее; порог 0.3 отсекает <<соседние>> объекты, но
+        терпит дрожание.
+  \item \texttt{max\_age} = 15: полсекунды при 30 кадрах/с. Достаточно, чтобы
+        пережить кратковременное перекрытие, но не настолько, чтобы <<держать>>
+        ушедший объект.
+\end{itemize}
+
+% ============================================================================
+\section{Метрики качества}
+
+\subsection{Метрики детекции}
+
+\subsubsection{Точность, полнота, $F_1$}
+
+Для детекций вводится понятие совпадения: детекция засчитывается как верная
+(TP), если её IoU с размеченной рамкой превышает порог (обычно 0.5) и класс
+совпадает.
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Величина & Определение & Смысл \\
+\midrule
+Precision & $\dfrac{TP}{TP + FP}$ & доля верных среди предсказанных \\
+Recall & $\dfrac{TP}{TP + FN}$ & доля найденных среди размеченных \\
+$F_1$ & $\dfrac{2PR}{P+R}$ & гармоническое среднее \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsubsection{AP и mAP}
+
+Кривая \emph{precision--recall} строится варьированием порога уверенности.
+Average Precision --- площадь под ней:
+\[
+  \mathrm{AP} = \int_0^1 p(r)\, dr .
+\]
+На практике интеграл заменяется суммой по точкам интерполяции:
+\[
+  \mathrm{AP} \approx \sum_k (r_{k+1} - r_k)\, \tilde{p}(r_{k+1}),
+\]
+где $\tilde{p}(r) = \max_{r' \ge r} p(r')$ --- монотонная огибающая.
+
+\begin{definition}[mAP]
+\[
+  \mathrm{mAP} = \frac{1}{n_c} \sum_{c=1}^{n_c} \mathrm{AP}_c ,
+\]
+среднее AP по классам. Порог IoU фиксирует вариант метрики
+(\texttt{mAP@0.5}, \texttt{mAP@0.5:0.95} --- усреднение по порогам
+0.5, 0.55, \dots, 0.95).
+\end{definition}
+
+\subsubsection{Метрики сегментации}
+
+Для масок IoU считается по пикселям:
+\[
+  \mathrm{IoU}_{\text{mask}}(A,B)
+  = \frac{|\{p : A(p) = 1 \wedge B(p) = 1\}|}
+         {|\{p : A(p) = 1 \vee B(p) = 1\}|}.
+\]
+\begin{itemize}
+  \item \textbf{Dice} (коэффициент Сёренсена):
+        $\mathrm{Dice} = \dfrac{2|A \cap B|}{|A| + |B|}$,
+        связано с IoU как $\mathrm{Dice} = \dfrac{2\,\mathrm{IoU}}{1 + \mathrm{IoU}}$.
+  \item \textbf{mIoU} --- среднее IoU по классам (semantic segmentation).
+  \item \textbf{Mask mAP} --- AP, где совпадение определяется по IoU масок.
+\end{itemize}
+
+\subsection{Метрики трекинга}
+
+\subsubsection{MOTA}
+
+\[
+  \mathrm{MOTA} = 1 - \frac{\sum_t \bigl(FN_t + FP_t + IDSW_t\bigr)}{\sum_t GT_t},
+\]
+где $FN$ --- пропущенные, $FP$ --- ложные, $IDSW$ --- переключения
+идентификатора, $GT$ --- число размеченных объектов. Значение может быть
+отрицательным при большом числе ошибок.
+
+\subsubsection{IDF1 и MOTP}
+
+\[
+  \mathrm{IDF1} = \frac{2\,\mathrm{IDTP}}{2\,\mathrm{IDTP} + \mathrm{IDFP} + \mathrm{IDFN}},
+\]
+\[
+  \mathrm{MOTP} = \frac{\sum_{i \in \mathrm{TP}} \mathrm{IoU}_i}{|\mathrm{TP}|}
+\]
+--- среднее совпадение для верно сопоставленных объектов (мера точности
+локализации).
+
+\subsection{Метрики реального времени}
+
+\begin{center}
+\begin{tabular}{p{0.24\linewidth}p{0.68\linewidth}}
+\toprule
+Метрика & Определение \\
+\midrule
+Задержка (latency) & $t_{\text{разметка}} - t_{\text{получение кадра}}$ \\
+Пропускная способность & число кадров, обработанных в секунду \\
+Доля вытеснений & $\dfrac{D}{N}$ --- показывает, насколько модель отстаёт \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{note}
+Ключевое свойство правильной схемы: при перегрузке \emph{средняя задержка не
+растёт}. В проекте измерялось $640\times480$ с моделью-заглушкой: спокойный
+режим (30 кадров/с) --- 42 мс, перегрузка (200 кадров/с) --- 23 мс. В
+перегрузке задержка \emph{меньше}, потому что конвейер не ждёт следующего
+кадра камеры: он обрабатывает непрерывно, а устаревшее вытесняется.
+
+Числа задержки включают путь <<получено от драйвера $\to$ разметка готова>>.
+В спокойном режиме значительная их часть --- это ожидание, пока кадр
+полежит в очереди: он приходит раз в 33 мс, а обрабатывается за 10 мс.
+\end{note}
+
+% ============================================================================
+\section{Декодирование и отрисовка: практические детали}
+
+\subsection{Почему маски рисуются одним слоем}
+
+Если накладывать каждую маску отдельно через \texttt{addWeighted}, в местах
+перекрытия альфа складывается:
+\[
+  C_{\text{out}} = \alpha C_1 + (1-\alpha)\bigl(\alpha C_2 + (1-\alpha) C_0\bigr)
+  \neq \alpha C_1 + (1-\alpha) C_0 ,
+\]
+и пятно темнеет. В проекте маски красятся в отдельный слой, который
+смешивается с кадром \emph{один} раз.
+
+\subsection{Почему \texttt{findContours} на копии}
+
+\texttt{cv::findContours} модифицирует входную матрицу (историческая
+особенность OpenCV). Поскольку \texttt{Instance.mask} может читаться другим
+потоком, контуры строятся по копии ROI:
+
+\begin{lstlisting}
+cv::findContours(instance.mask(roi).clone(), contours, cv::RETR_EXTERNAL,
+                 cv::CHAIN_APPROX_SIMPLE);
+\end{lstlisting}
+
+\subsection{Принцип <<нейтральной разметки>>}
+
+Если модели нет, вектор \texttt{instances} пуст, и функция \texttt{draw\_overlay}
+возвращает обычную копию кадра. Правая половина склейки оказывается
+побитово равна левой. Отдельного режима <<без модели>> нет --- это важно:
+конвейер всегда работает одинаково, а отсутствие модели --- частный случай
+отсутствия объектов.
+
+% ============================================================================
+\section{Как читать и проверять многопоточный код}
+
+Многопоточные ошибки отличаются от обычных тем, что проявляются
+\emph{недетерминированно}. Ниже --- практические приёмы, применимые к этому
+проекту.
+
+\subsection{Правила, по которым устроен код}
+
+\begin{enumerate}
+  \item \textbf{Один владелец --- один поток.} \texttt{Queue} принадлежит
+        конкретным потокам и защищена изнутри. Наружу она не отдаёт ссылки на
+        своё содержимое.
+  \item \textbf{Данные между потоками неизменяемы.}
+        \texttt{shared\_ptr<const Frame>} --- компилятор сам не даст записать.
+  \item \textbf{Состояние, разделяемое на чтение, --- атомарное.} Счётчики
+        \texttt{std::atomic} читаются из HUD без блокировок.
+  \item \textbf{Никаких <<флагов на честном слове>>.} Флаг остановки ---
+        \texttt{std::atomic<bool>}, а не \texttt{bool}.
+\end{enumerate}
+
+\subsection{Типичные ошибки и как их узнать}
+
+\begin{center}
+\begin{tabular}{p{0.24\linewidth}p{0.30\linewidth}p{0.38\linewidth}}
+\toprule
+Ошибка & Проявление & Как обнаружить \\
+\midrule
+Гонка данных (data race) & <<плавающие>> результаты, редкие падения &
+ThreadSanitizer (\texttt{-fsanitize=thread}) \\
+Использование после освобождения & падение в случайном месте &
+AddressSanitizer \\
+Дедлок & программа висит на выходе & дамп стеков, \texttt{gdb -p} \\
+Ложное пробуждение без предиката & падение в \texttt{pop()} & проверка
+предиката в \texttt{wait} \\
+\texttt{joinable} поток при разрушении & \texttt{terminate} & порядок
+флага и \texttt{join} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Как воспроизвести проблему производительности}
+
+Приёмы, использованные в проекте:
+
+\begin{itemize}
+  \item \textbf{Счётчик вытеснений.} Если \texttt{dropped} растёт, обработка
+        не успевает. Это не ошибка, а диагностика.
+  \item \textbf{Искусственная перегрузка.} Флаг
+        \texttt{--fps 200} у синтетического источника создаёт заведомо
+        избыточный поток кадров: на нём проверяется, что задержка не растёт.
+  \item \textbf{Явные метрики в конце прогона.} Первая, средняя и
+        максимальная задержка --- три числа, которых достаточно, чтобы
+        отличить рабочую схему от деградирующей.
+\end{itemize}
+
+\begin{note}
+Проверять надо не <<средний FPS>>, а поведение при перегрузке. Система,
+которая в среднем быстра, но копит очередь, непригодна для реального
+времени: задержка в ней растёт линейно и рано или поздно становится
+недопустимой.
+\end{note}
+
+\section{Библиотеки и фреймворки}
+
+\subsection{OpenCV}
+
+Назначение: обработка изображений и видео. Используемые модули:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Модуль & Что даёт проекту \\
+\midrule
+\texttt{core} & \texttt{cv::Mat}, базовые типы, арифметика \\
+\texttt{imgproc} & \texttt{resize}, \texttt{findContours}, \texttt{drawContours},
+                 \texttt{addWeighted} \\
+\texttt{imgcodecs} & \texttt{imdecode} (JPEG из камеры), \texttt{imwrite} \\
+\texttt{highgui} & \texttt{imshow}, \texttt{waitKey} \\
+\texttt{dnn} & \texttt{blobFromImage} \\
+\texttt{video} & \texttt{cv::KalmanFilter} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{note}
+Модуль \texttt{videoio} не используется: видео берётся напрямую из V4L2.
+Это осознанный выбор --- \texttt{VideoCapture} скрывает формат и negotiated
+параметры, а цель проекта --- увидеть механику.
+\end{note}
+
+\subsection{ONNX Runtime}
+
+Назначение: исполнение моделей в формате ONNX на CPU. Основные понятия:
+
+\begin{itemize}
+  \item \texttt{Ort::Env} --- окружение (логирование, потоки), одно на процесс;
+  \item \texttt{Ort::Session} --- загруженная модель;
+  \item \texttt{Ort::Value} --- тензор; создаётся на уже существующей памяти,
+        поэтому данные не копируются;
+  \item \texttt{SessionOptions} --- уровень оптимизации графа, число потоков.
+\end{itemize}
+
+\begin{note}
+Почему \texttt{CreateTensor} на памяти \texttt{cv::Mat}: входной blob уже
+лежит непрерывным массивом \texttt{float}. Копировать его в тензор --- лишние
+мегабайты на каждый кадр.
+\end{note}
+
+\subsection{Прочие зависимости}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Библиотека & Роль \\
+\midrule
+\texttt{pthreads} (\texttt{Threads::Threads}) & \texttt{std::thread}, мьютексы \\
+V4L2 (заголовки ядра) & \texttt{linux/videodev2.h}, \texttt{sys/ioctl.h} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ============================================================================
+\section{Инструменты разработки и отладки}
+
+\subsection{Что искать при падениях}
+
+\begin{center}
+\begin{tabular}{p{0.30\linewidth}p{0.64\linewidth}}
+\toprule
+Симптом & Что это обычно значит \\
+\midrule
+\texttt{Segmentation fault} & разыменование пустого/висячего указателя,
+                              выход за границы массива \\
+\texttt{terminate called without an active exception} & \texttt{joinable}
+        \texttt{std::thread} при разрушении, либо исключение в потоке \\
+Зависание на выходе & \texttt{join} без снятия флага остановки \\
+Рост памяти & утечка \texttt{new} без \texttt{delete}, цикл ссылок
+              \texttt{shared\_ptr} \\
+<<Пустая разметка>> & неверный layout выходов, порог уверенности,
+        несовпадение числа классов \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Инструменты}
+
+\begin{itemize}
+  \item \textbf{AddressSanitizer}: \texttt{-fsanitize=address -g}. Указывает
+        строку и тип ошибки памяти. В этом проекте нашёл выход за границы
+        \texttt{std::vector<bool>}.
+  \item \textbf{UBSan}: \texttt{-fsanitize=undefined}. Ловит переполнения
+        знаковых, сдвиги, выравнивание.
+  \item \textbf{ThreadSanitizer}: \texttt{-fsanitize=thread}. Ищет гонки
+        данных; полезен при изменении очереди.
+  \item \textbf{valgrind}: медленнее, но умеет профилировать память.
+  \item \textbf{perf}: профилирование CPU.
+\end{itemize}
+
+\subsection{Проверка без камеры и без весов}
+
+\begin{lstlisting}[style=shell]
+./scripts/smoke_test.sh
+\end{lstlisting}
+
+Скрипт выполняет пять шагов: сборка, тесты, прогон с моделью-заглушкой,
+проверка контракта <<пустые маски $\Rightarrow$ половины совпадают>>,
+корректная остановка по SIGINT. Модель-заглушка генерируется скриптом
+\texttt{make\_stub\_model.py}: она имеет те же формы тензоров, что и настоящая,
+но случайные веса. Этого достаточно для проверки декодера, масок, трекера и
+отрисовки.
+
+% ============================================================================
+\section{Разбор найденных ошибок: что и почему ломалось}
+
+Раздел полезен тем, что показывает \emph{типичные} ошибки в подобном коде и
+метод их поиска. Все случаи реальные, из истории разработки проекта.
+
+\subsection{Выход за границы вектора в трекере}
+
+\paragraph{Симптом.} Тест трекера завершается с \texttt{Segmentation fault}.
+
+\paragraph{Как искали.} Отладчика \texttt{gdb} в среде не было. Сборка с
+\texttt{-fsanitize=address} дала точное место: обращение к
+\texttt{std::vector<bool>} по индексу за границей.
+
+\paragraph{Причина.} Флаги <<трек был сопоставлен>> создавались по размеру
+списка треков \emph{до} добавления новых. Затем цикл старения проходил по
+\emph{новому} размеру, включающему только что добавленные треки.
+
+\begin{lstlisting}
+std::vector<bool> track_used(tracks_.size(), false);   // старый размер
+// ... добавление новых треков: tracks_.push_back(...)
+for (std::size_t t = 0; t < tracks_.size(); ++t) {     // новый размер! UB
+    if (!track_used[t]) { ++tracks_[t].missed; }
+}
+\end{lstlisting}
+
+\paragraph{Исправление.} Граница цикла привязана к размеру \emph{флагов},
+которые описывают именно <<треки, существовавшие до этого кадра>>.
+
+\paragraph{Мораль.} Индексная переменная должна ограничиваться тем
+контейнером, по которому идёт индексация. \texttt{operator[]} у
+\texttt{std::vector} не проверяет границы (в отличие от \texttt{at()}).
+
+\subsection{\texttt{terminate} при остановке конвейера}
+
+\paragraph{Симптом.} При выходе: \texttt{terminate called without an active
+exception}.
+
+\paragraph{Причина.} \texttt{join()} вызывался до снятия флага остановки.
+Рабочие циклы крутились по флагу, которого никто не снимал; кроме того, при
+некотором раскладе рабочий цикл завершался сам, и объект
+\texttt{std::thread} оставался \emph{joinable} --- это и вызывает
+\texttt{std::terminate} при разрушении.
+
+\paragraph{Исправление.} Порядок строго: снять флаг, затем \texttt{join}.
+
+\subsection{Трекер <<залипал>>: пропущенное уравнение ковариации}
+
+Самая содержательная ошибка --- она математическая, а не программная.
+Подробный разбор --- в разделе о фильтре Калмана: вызов
+\texttt{kalman.predict()} был заменён на умножение матрицы перехода, из-за
+чего ковариация ошибки не росла, усиление было близко к нулю, и трек не
+следовал за объектом.
+
+\paragraph{Почему не замечалось сразу.} На медленном движении (несколько
+пикселей за кадр) IoU оставался выше порога, и трек не терялся. Ошибка
+проявилась бы на реальной камере, где объекты смещаются заметно.
+
+\paragraph{Мораль.} Тест должен воспроизводить \emph{напряжённый} режим
+(в данном случае --- быстрое движение), иначе он не отличает правильную
+реализацию от почти правильной.
+
+\subsection{Нулевая скорость в HUD}
+
+\paragraph{Симптом.} Счётчики кадров в секунду всегда показывали $0{,}0$.
+
+\paragraph{Причина.} Метрики пересчитывались только внутри ветки обработки
+полученного результата, а точка отсчёта обновлялась там же. В итоге знаменатель
+оказывался нулевым или период не накапливался.
+
+\paragraph{Мораль.} Периодические измерения нужно обновлять независимо от
+того, пришли ли новые данные; иначе метрика <<замерзает>> именно в тот
+момент, когда она важнее всего (поток данных встал).
+
+\subsection{Отрисовка масок: полный кадр вместо рамки}
+
+\paragraph{Симптом.} На модели, выдающей много объектов (несколько сотен),
+обработка падает со 30 кадров/с до 6--7, а счётчик вытеснений растёт.
+
+\paragraph{Что измеряли.} По HUD было видно \texttt{objects 300}, то есть
+дело не в декодере. Замеры по частям:
+
+\begin{center}
+\begin{tabular}{lr}
+\toprule
+Операция (1280$\times$720, 300 объектов) & Время на кадр \\
+\midrule
+трекер & 1{,}7 мс \\
+отрисовка без масок & 10{,}8 мс \\
+отрисовка 300 масок (\emph{до} исправления) & 266{,}5 мс \\
+отрисовка 300 масок (\emph{после}) & 17{,}7 мс \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Причина.} Маска хранится в размере \emph{всего} кадра, хотя
+ненулевые пиксели занимают лишь рамку объекта. Код же делал
+\texttt{setTo(color, mask)} и \texttt{findContours(mask)} по полному кадру.
+Стоимость: $300 \times 1280 \times 720 \approx 2{,}8\cdot 10^{8}$ операций на
+кадр --- при том что полезная площадь на два порядка меньше.
+
+\paragraph{Исправление.} Обе операции выполняются над ROI --- прямоугольником
+рамки. Контуры, найденные в ROI, затем сдвигаются на смещение рамки.
+
+\begin{lstlisting}
+const cv::Rect roi = instance.box & cv::Rect(0, 0, canvas.cols, canvas.rows);
+cv::Mat layer_roi = layer(roi);
+layer_roi.setTo(class_color(instance.class_id), instance.mask(roi));
+\end{lstlisting}
+
+\begin{note}
+\texttt{cv::Mat::operator()} не копирует пиксели: ROI --- это новый заголовок
+матрицы, ссылающийся на ту же память, но со своим шагом строки. Поэтому запись
+в \texttt{layer\_roi} меняет исходный \texttt{layer}. Это идиома <<вид на
+область>>, и её надо знать: изменение вида изменяет оригинал.
+\end{note}
+
+\paragraph{Мораль.} Сложность алгоритма нужно считать по \emph{реально
+обрабатываемой} площади, а не по размеру контейнера. И измерять по частям:
+без замеров легко <<оптимизировать>> не то место --- трекер, который был
+подозреваемым номером один, занимал менее 2\% времени.
+
+\subsection{Молчаливая потеря объектов при неожиданном выходе модели}
+
+\paragraph{Симптом.} При нестандартной форме второго выхода модели на экране
+нет ни объектов, ни сообщений об ошибке.
+
+\paragraph{Причина.} Результат заполнялся \emph{только} внутри ветки
+<<построить маски>>. Если второй выход не был картой прототипов, функция
+возвращала пустой список.
+
+\paragraph{Исправление.} Явная проверка формы выхода и \emph{деградация}:
+при отсутствии прототипов отдаются хотя бы рамки, а в лог пишется
+предупреждение.
+
+\paragraph{Мораль.} Любая <<деградация>> должна быть видимой. Пустой
+результат без сообщения --- худший вид ошибки: он выглядит как корректная
+работа на кадре без объектов.
+
+\section{Как расширять проект}
+
+Разделение на интерфейсы выбрано так, чтобы типичные изменения затрагивали
+один файл.
+
+\subsection{Добавить новый источник кадров}
+
+Достаточно реализовать \texttt{Source} и выбрать реализацию в \texttt{main}:
+
+\begin{lstlisting}
+class FileSource final : public Source {
+public:
+    bool open(std::string& error) override;
+    bool grab(FramePtr& out, std::string& error) override;
+    int width() const override;
+    int height() const override;
+};
+\end{lstlisting}
+
+Конвейер, трекер и отрисовка при этом не меняются: они работают с
+\texttt{Source\&}.
+
+\subsection{Поддержать другой формат выходов модели}
+
+Добавляется новая ветка декодирования и новое значение параметра
+\texttt{out\_layout}. Важно, что формат задаётся \emph{явно}: пользователь
+обязан указать, какой у него экспорт, а программа печатает фактические формы
+тензоров при загрузке --- расхождение видно сразу.
+
+\subsection{Улучшить сопоставление в трекере}
+
+Жадный алгоритм локализован в одной функции. Замены по возрастанию сложности:
+
+\begin{enumerate}
+  \item венгерский алгоритм (оптимальное назначение по суммарному IoU);
+  \item каскадное сопоставление: сначала по IoU, затем по расстоянию между
+        центрами;
+  \item учёт класса и цвета/гистограмм;
+  \item DeepSORT с эмбеддингами внешнего вида.
+\end{enumerate}
+
+Все они вставляются на место шага сопоставления и не затрагивают очередь,
+потоки или отрисовку.
+
+\subsection{Что менять не следует}
+
+\begin{itemize}
+  \item \textbf{Политику переполнения очереди} --- вытеснение старого
+        является смыслом схемы реального времени.
+  \item \textbf{Неизменяемость кадра} на границе потоков: именно она
+        обеспечивает потокобезопасность без блокировок.
+  \item \textbf{Явность форматов}: любой автоподбор скрывает причину ошибок.
+\end{itemize}
+
+\section{Итог: принципы, которые переносятся на другие проекты}
+
+\begin{enumerate}
+  \item \textbf{Разделяй стадии по времени отклика.} Захват (жёсткий темп)
+        и обработка (переменное время) --- разные потоки.
+  \item \textbf{Ограничивай буферы и выбирай политику переполнения осознанно.}
+        Для реального времени правильная политика --- вытеснение старого.
+  \item \textbf{Делай данные неизменяемыми на границе потоков.}
+        \texttt{shared\_ptr<const T>} убирает гонки без блокировок.
+  \item \textbf{Никогда не блокируй производителя.} Иначе камера встанет.
+  \item \textbf{Задавай форматы явно.} Автодетект скрывает ошибки.
+  \item \textbf{Пиши тест на каждую найденную ошибку.} Тест на движение в
+        трекере и тест баланса очереди появились именно так.
+  \item \textbf{Переводи исключения в коды возврата на границе потоков.}
+        Иначе \texttt{std::terminate}.
+  \item \textbf{Измеряй задержку, а не только пропускную способность.}
+        Система может быть быстрой в среднем и непригодной в реальном времени.
+\end{enumerate}
+
+\appendix
+
+\section{Сводка формул}
+
+\begin{align}
+  \text{letterbox:}\quad & s = \min(S/W, S/H), \quad x = su + p_x \\
+  \text{обратно:}\quad & u = (x - p_x)/s \\
+  \text{IoU:}\quad & \frac{|A \cap B|}{|A| + |B| - |A \cap B|} \\
+  \text{сигмоида:}\quad & \sigma(z) = \frac{1}{1+e^{-z}} \\
+  \text{порог маски:}\quad & \sigma(z) > t \iff z > \ln\frac{t}{1-t} \\
+  \text{Калман, предсказание:}\quad & \hat{x}^- = F\hat{x}, \quad P^- = FPF^\top + Q \\
+  \text{Калман, коррекция:}\quad & K = P^-H^\top(HP^-H^\top + R)^{-1} \\
+  & \hat{x} = \hat{x}^- + K(z - H\hat{x}^-), \quad P = (I-KH)P^- \\
+  \text{Precision/Recall:}\quad & \frac{TP}{TP+FP}, \quad \frac{TP}{TP+FN} \\
+  \text{mAP:}\quad & \frac{1}{n_c}\sum_c \mathrm{AP}_c
+\end{align}
+
+\section{Словарь терминов}
+
+\begin{description}[leftmargin=3.2cm,style=nextline]
+  \item[blob] непрерывный массив чисел, здесь --- вход сети в формате NCHW.
+  \item[letterbox] вписывание изображения в квадрат с сохранением пропорций и
+        полями.
+  \item[NMS] non-maximum suppression, подавление перекрывающихся детекций.
+  \item[IoU] intersection over union, мера перекрытия двух областей.
+  \item[anchor] позиция на карте признаков, для которой сеть предсказывает
+        объект.
+  \item[прототип маски] одна из 32 базовых масок, линейная комбинация которых
+        даёт маску объекта.
+  \item[RAII] привязка владения ресурсом к времени жизни объекта.
+  \item[pimpl] идиома сокрытия деталей реализации за неполным типом.
+  \item[вытеснение] удаление самого старого элемента при переполнении очереди.
+  \item[rpath] путь поиска динамических библиотек, вшитый в исполняемый файл.
+\end{description}
+
+\end{document}

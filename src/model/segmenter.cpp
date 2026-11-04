@@ -4,7 +4,6 @@
 #include <chrono>
 #include <cmath>
 #include <memory>
-#include <memory>
 #include <numeric>
 #include <vector>
 
@@ -250,6 +249,10 @@ void Segmenter::make_masks(const std::vector<Instance>& dets,
                            std::vector<Instance>& out) const {
     // Прототипы: [1, 32, ph, pw]. Маска объекта = sigmoid(сумма_k coeff[k]*proto[k]),
     // затем обрезка по боксу, масштабирование в кадр и порог.
+    if (proto_shape.size() != 4 || proto_shape[1] < kMaskCoeffs) {
+        out = dets;  // прототипов недостаточно — оставляем только боксы
+        return;
+    }
     const int ph = static_cast<int>(proto_shape[2]);
     const int pw = static_cast<int>(proto_shape[3]);
     const std::size_t plane = static_cast<std::size_t>(ph) * pw;
@@ -309,12 +312,10 @@ void Segmenter::make_masks(const std::vector<Instance>& dets,
                    cv::Size(std::max(1, cvRound(clipped.width)),
                             std::max(1, cvRound(clipped.height))));
 
-        // 4. Порог. sigmoid(v) > t эквивалентно v > logit(t) — одно сравнение
-        //    вместо exp()/деления на каждый пиксель.
+        // 4. Порог в логитах: sigmoid(z) > t  <=>  z > ln(t/(1-t)).
+        // Сравнивать надо именно логиты (resized), а не вероятности — так на
+        // каждый пиксель приходится одно сравнение вместо exp().
         const float logit = std::log(config_.mask_threshold / (1.0f - config_.mask_threshold));
-        // Масштаб в координатах кадра: прототип покрывает весь вход сети, а
-        // вход — это кадр, уменьшенный в scale раз. Поэтому делим порог на
-        // ничего не нужно, но координаты resized уже в пикселях кадра.
         cv::Mat binary;
         cv::compare(resized, logit, binary, cv::CMP_GT);
 
@@ -385,13 +386,23 @@ bool Segmenter::infer(const cv::Mat& bgr, std::vector<Instance>& out, double* in
             decode_nms(pred, pred_shape[1], pred_shape[2], dets, coeffs);
         }
 
-        if (outputs.size() > 1) {
+        // Прототипы масок — второй выход. Если его нет \emph{или} он не четырёхмерный,
+        // это не повод терять детекции: отдаём хотя бы боксы. Иначе объекты молча
+        // исчезали бы, и причина была бы не видна.
+        const bool has_protos =
+            outputs.size() > 1 && outputs[1].GetTensorTypeAndShapeInfo().GetShape().size() == 4;
+        if (has_protos) {
             const auto proto_shape = outputs[1].GetTensorTypeAndShapeInfo().GetShape();
-            if (proto_shape.size() == 4) {
-                make_masks(dets, coeffs, outputs[1].GetTensorData<float>(), proto_shape, scale, pad,
-                           bgr.size(), out);
+            if (proto_shape[1] != kMaskCoeffs) {
+                LOG_WARN << "прототипы: ожидалось " << kMaskCoeffs << " каналов, получено "
+                         << proto_shape[1] << " — маски будут пустыми";
             }
+            make_masks(dets, coeffs, outputs[1].GetTensorData<float>(), proto_shape, scale, pad,
+                       bgr.size(), out);
         } else {
+            if (outputs.size() > 1) {
+                LOG_WARN << "второй выход не является картой прототипов — только боксы";
+            }
             out = std::move(dets);  // модель без прототипов: только боксы
         }
 

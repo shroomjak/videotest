@@ -378,8 +378,11 @@ int main(int argc, char** argv) {
     // --- 5. корректная остановка ---------------------------------------------
     stop_flag().store(true);
     pipeline.stop();
-    if (show) {
+    // Окно могло так и не появиться (сервер без X11), поэтому вызов защищён.
+    try {
         cv::destroyAllWindows();
+    } catch (const cv::Exception&) {
+        // окна нет (сервер без X11) — закрывать нечего
     }
 
     const auto& stats = pipeline.stats();

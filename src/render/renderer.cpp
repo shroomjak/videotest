@@ -62,14 +62,25 @@ cv::Mat draw_overlay(const cv::Mat& bgr, const std::vector<Instance>& instances,
     // 1. Маски: красим все в один слой и смешиваем его с кадром ОДИН раз —
     //    иначе полупрозрачные заливки накладываются друг на друга и перекрытия
     //    становятся темнее (альфа складывается).
+    //
+    //    ВАЖНО про производительность: маска хранится в размере ВСЕГО кадра, но
+    //    ненулевые пиксели у неё только внутри рамки объекта. Поэтому все
+    //    операции делаются над ROI (прямоугольником рамки), а не над кадром:
+    //    при 1280x720 и 300 объектах разница — сотни миллисекунд на кадр.
     if (options.show_masks) {
         cv::Mat layer = canvas.clone();
         bool painted = false;
         for (const auto& instance : instances) {
-            if (!instance.mask.empty()) {
-                layer.setTo(class_color(instance.class_id), instance.mask);
-                painted = true;
+            const cv::Rect roi = instance.mask.empty() ? cv::Rect()
+                                                       : instance.box & cv::Rect(0, 0, canvas.cols, canvas.rows);
+            if (roi.width <= 0 || roi.height <= 0) {
+                continue;
             }
+            // Работаем только внутри рамки: и маска, и слой режутся одним ROI.
+            cv::Mat mask_roi = instance.mask(roi);
+            cv::Mat layer_roi = layer(roi);
+            layer_roi.setTo(class_color(instance.class_id), mask_roi);
+            painted = true;
         }
         if (painted) {
             cv::addWeighted(canvas, 1.0 - options.mask_alpha, layer, options.mask_alpha, 0.0,
@@ -77,14 +88,26 @@ cv::Mat draw_overlay(const cv::Mat& bgr, const std::vector<Instance>& instances,
         }
     }
 
-    // 2. Контуры масок — чёткая граница объекта.
+    // 2. Контуры масок — чёткая граница объекта. Контуры ищутся в ROI, а точки
+    //    затем смещаются обратно в координаты кадра.
     for (const auto& instance : instances) {
-        if (!instance.mask.empty()) {
-            std::vector<std::vector<cv::Point>> contours;
-            cv::findContours(instance.mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-            cv::drawContours(canvas, contours, -1, class_color(instance.class_id), thickness,
-                             cv::LINE_AA);
+        const cv::Rect roi = instance.mask.empty() ? cv::Rect()
+                                                   : instance.box & cv::Rect(0, 0, canvas.cols, canvas.rows);
+        if (roi.width <= 0 || roi.height <= 0) {
+            continue;
         }
+        std::vector<std::vector<cv::Point>> contours;
+        // findContours модифицирует вход, поэтому нужна копия ROI.
+        cv::findContours(instance.mask(roi).clone(), contours, cv::RETR_EXTERNAL,
+                         cv::CHAIN_APPROX_SIMPLE);
+        for (auto& contour : contours) {
+            for (auto& point : contour) {
+                point.x += roi.x;
+                point.y += roi.y;
+            }
+        }
+        cv::drawContours(canvas, contours, -1, class_color(instance.class_id), thickness,
+                         cv::LINE_AA);
     }
 
     // 3. Бокс и подпись: «#track_id class score».
