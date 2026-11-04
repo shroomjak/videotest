@@ -1,48 +1,39 @@
 #!/usr/bin/env bash
-# Сквозная проверка проекта без камеры и без настоящих весов модели.
+# Проверка проекта без камеры и без настоящих весов модели.
 #
-# Что проверяется:
-#   1. сборка;
-#   2. юнит-тесты (очереди, NMS/IoU, геометрия letterbox);
-#   3. запуск конвейера на синтетическом источнике с моделью-заглушкой;
-#   4. корректный выход по Ctrl+C (SIGINT) без зависания join().
+#   ./scripts/smoke_test.sh [-DOpenCV_DIR=... -DONNXRUNTIME_ROOT=...]
 #
-# Требуется: cmake, OpenCV, ONNX Runtime SDK в third_party/onnxruntime
-# (или -DONNXRUNTIME_ROOT=...), python3 с пакетом onnx — только для заглушки.
+# Шаги: сборка -> тесты -> генерация модели-заглушки -> прогон конвейера
+# на синтетическом источнике -> проверка корректного выхода по SIGINT.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD="${ROOT}/build"
 
-echo "==> 1/4 конфигурация и сборка"
+echo "==> 1/4 сборка"
 cmake -S "${ROOT}" -B "${BUILD}" -DCMAKE_BUILD_TYPE=Release "${@}" > /dev/null
 cmake --build "${BUILD}" -j"$(nproc)" > /dev/null
 echo "    ok"
 
-echo "==> 2/4 юнит-тесты"
-ctest --test-dir "${BUILD}" --output-on-failure | tail -4
+echo "==> 2/4 тесты"
+ctest --test-dir "${BUILD}" --output-on-failure | tail -3
 
-echo "==> 3/4 модель-заглушка и запуск конвейера"
-STUB="${BUILD}/stub-seg.onnx"
+echo "==> 3/4 прогон с моделью-заглушкой"
+STUB="${BUILD}/stub-raw.onnx"
 python3 "${ROOT}/scripts/make_stub_model.py" --classes 3 --output "${STUB}" > /dev/null
-"${BUILD}/videotest" \
-    --synthetic --width 640 --height 480 --fps 30 \
-    --model "${STUB}" \
-    --headless --max-frames 30 \
-    --snapshot "${BUILD}/check.png" \
-    --record "${BUILD}/check.mp4" \
-    --log-level info 2>&1 | tail -4
+"${BUILD}/videotest" --synthetic --width 640 --height 480 \
+    --model "${STUB}" --classes 3 --out-layout raw \
+    --no-window --max-frames 60 --snapshot "${BUILD}/check.png"
 test -s "${BUILD}/check.png" || { echo "снимок не создан"; exit 1; }
-echo "    ok (снимок: ${BUILD}/check.png)"
+echo "    ok (${BUILD}/check.png)"
 
 echo "==> 4/4 остановка по SIGINT"
-"${BUILD}/videotest" --synthetic --model "${STUB}" --log-level warn &
+"${BUILD}/videotest" --synthetic --no-window > /dev/null 2>&1 &
 PID=$!
 sleep 2
 kill -INT "${PID}"
-# ждём не дольше 10 секунд: если процесс завис на join(), это баг
-for _ in $(seq 1 100); do
-    if ! kill -0 "${PID}" 2>/dev/null; then break; fi
+for _ in $(seq 1 50); do
+    kill -0 "${PID}" 2>/dev/null || break
     sleep 0.1
 done
 if kill -0 "${PID}" 2>/dev/null; then
@@ -50,8 +41,7 @@ if kill -0 "${PID}" 2>/dev/null; then
     kill -9 "${PID}"
     exit 1
 fi
-wait "${PID}" 2>/dev/null || true
-echo "    ok (завершился по SIGINT)"
+echo "    ok"
 
 echo
-echo "Всё проверено. Для работы с камерой и настоящей моделью смотрите README."
+echo "Всё проверено. Запуск с камерой: ./build/videotest --model models/yolo11n-seg.onnx"

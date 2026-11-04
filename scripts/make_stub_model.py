@@ -159,6 +159,8 @@ def main() -> None:
     onnx.save(model, args.output)
     print(f"готово: {args.output}")
     print("вход:  images  [1,3,640,640]")
+    print("использование в проекте:  --model <файл> --classes %d --out-layout %s"
+          % (args.classes, "nms" if args.end2end else "raw"))
     if args.end2end:
         print(f"выход: output0 [1,300,{6 + 32}] (end-to-end), "
               f"output1 [1,32,{args.proto_size},{args.proto_size}]")
