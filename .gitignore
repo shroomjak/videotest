@@ -66,3 +66,16 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# сторонние SDK (ONNX Runtime) и модели — не коммитим
+third_party/
+models/
+data/
+*.onnx
+*.mp4
+*.png
+!docs/**/*.png
+
+# артефакты запуска
+snapshot_*.png
+out.mp4
