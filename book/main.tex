@@ -49,8 +49,10 @@
   tabsize=4,
   columns=fullflexible,
   keepspaces=true,
-  extendedchars=true,
-  inputencoding=utf8,
+  % extendedchars=false обязательно: при true listings перехватывает
+  % байты UTF-8 раньше inputenc, и pdflatex падает с
+  % "Unicode char ... not set up for use with LaTeX".
+  extendedchars=false,
   literate={--}{{-{}-}}1 {<<}{{<}{<}}1 {>>}{{>}{>}}1,
 }
 \lstdefinestyle{shell}{
