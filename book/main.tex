@@ -1,45 +1,29 @@
 % ============================================================================
 %  videotest: учебное пособие по проекту
-%  Компиляция: xelatex tutorial.tex   (рекомендуется)
-%              pdflatex tutorial.tex  (работает, если есть babel-russian)
-%  Нужны пакеты: babel, fontspec+polyglossia (xelatex) или babel-russian
-%  (pdflatex), amsmath, amssymb, mathtools, booktabs, longtable, listings,
-%  hyperref, xcolor, geometry, titlesec, enumitem, microtype.
-%  Шрифты CMU (для xelatex): texlive-fonts-extra или пакет cm-unicode.
+%
+%  Компиляция: pdflatex tutorial.tex
+%  Требуется: базовый TeX Live + пакеты babel-russian, cyrillic (шрифты
+%  lh/cm-super для T2A), listings, xcolor, booktabs, geometry.
+%  В Debian/Ubuntu это texlive-latex-recommended, texlive-lang-cyrillic
+%  и texlive-latex-extra (для listings).
+%
+%  Значок <<>> вместо кавычек-ёлочек, чтобы файл одинаково читался
+%  в любой кодировке.
 % ============================================================================
 \documentclass[11pt,a4paper]{article}
 
 % --- кодировка и язык -------------------------------------------------------
-\usepackage{iftex}
-\ifPDFTeX
-  \usepackage[T2A]{fontenc}
-  \usepackage[utf8]{inputenc}
-  \usepackage[russian,english]{babel}
-\else
-  \usepackage{fontspec}
-  \usepackage{polyglossia}
-  \setdefaultlanguage{russian}
-  \setotherlanguage{english}
-  \setmainfont{CMU Serif}
-  \setsansfont{CMU Sans Serif}
-  \setmonofont{CMU Typewriter Text}
-\fi
+\usepackage[T2A]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[russian,english]{babel}
 
 % --- математика -------------------------------------------------------------
-\usepackage{amsmath,amssymb,amsthm,mathtools}
-\usepackage{bm}
+\usepackage{amsmath,amssymb,amsthm}
 
 % --- вёрстка ----------------------------------------------------------------
 \usepackage[a4paper,margin=2.4cm]{geometry}
 \usepackage{booktabs}
-\usepackage{array}
-\usepackage{longtable}
-\usepackage{enumitem}
 \usepackage{xcolor}
-\usepackage{graphicx}
-\usepackage{caption}
-\usepackage{titlesec}
-\usepackage{microtype}
 
 % --- код --------------------------------------------------------------------
 \usepackage{listings}
@@ -90,9 +74,6 @@
 }
 \lstset{style=cpp}
 
-% --- гиперссылки ------------------------------------------------------------
-\usepackage[hidelinks,bookmarksnumbered]{hyperref}
-
 % --- теоремы и примечания ---------------------------------------------------
 \theoremstyle{definition}
 \newtheorem{definition}{Определение}[section]
@@ -100,19 +81,20 @@
 \theoremstyle{remark}
 \newtheorem*{remark}{Замечание}
 
-% «Заметка» как среда: не требует tcolorbox и допускает абзацы внутри.
+% «Заметка» как среда: только базовые средства LaTeX (без tcolorbox).
+% \parbox с явной шириной: внутри него допустимы абзацы.
+\newsavebox{\notebox}
 \newenvironment{note}
   {\par\medskip\noindent
-   \begin{minipage}{\linewidth}
-   \colorbox{codebg}{\begin{minipage}{\dimexpr\linewidth-2\fboxsep\relax}
-     \small\textbf{Замечание.}\par\vspace{1pt}\noindent\ignorespaces}
-  {\end{minipage}}\end{minipage}\par\medskip}
+   \begin{lrbox}{\notebox}%
+   \begin{minipage}{0.93\linewidth}%
+   \small\textbf{Замечание.}\par\vspace{1pt}\noindent\ignorespaces}
+  {\end{minipage}%
+   \end{lrbox}%
+   \fboxsep=6pt\relax
+   \colorbox{codebg}{\usebox{\notebox}}%
+   \par\medskip}
 
-\titleformat{\section}{\Large\bfseries}{\thesection}{1em}{}
-\titleformat{\subsection}{\large\bfseries}{\thesubsection}{1em}{}
-
-\setlist[itemize]{topsep=2pt,itemsep=1pt,parsep=0pt}
-\setlist[enumerate]{topsep=2pt,itemsep=1pt,parsep=0pt}
 
 % ============================================================================
 \title{\textbf{videotest}\\[2mm]
@@ -189,7 +171,7 @@
 
 \subsection{Быстрый старт}
 
-\begin{lstlisting}[style=shell,escapeinside={(*@}{@)}]
+\begin{lstlisting}[style=shell,escapeinside={(*@}{@*)}]
 sudo apt install build-essential cmake libopencv-dev v4l-utils   (*@\#@*) OpenCV 4.5+
 ./scripts/fetch_onnxruntime.sh                                   (*@\#@*) SDK в third_party/
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -309,7 +291,7 @@ OpenCV и ONNX Runtime --- динамические.
 CMake не компилирует сам: он \emph{генерирует} файлы сборки (Makefile или
 \texttt{build.ninja}) для выбранного генератора. Процесс двухфазный:
 
-\begin{lstlisting}[style=shell,escapeinside={(*@}{@)}]
+\begin{lstlisting}[style=shell,escapeinside={(*@}{@*)}]
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release   (*@\#@*) конфигурация
 cmake --build build -j                            (*@\#@*) сборка
 \end{lstlisting}
@@ -382,7 +364,7 @@ target_link_libraries(videotest PRIVATE videotest_core)
 сознательно обходится без фреймворков: тесты --- это обычные программы,
 возвращающие ненулевой код при ошибке.
 
-\begin{lstlisting}[escapeinside={(*@}{@)}]
+\begin{lstlisting}[escapeinside={(*@}{@*)}]
 (*@\#@*)define CHECK(cond)                                                       (*@\textbackslash@*)
     do {                                                                  (*@\textbackslash@*)
         if (!(cond)) {                                                    (*@\textbackslash@*)
@@ -404,7 +386,7 @@ target_link_libraries(videotest PRIVATE videotest_core)
 В проекте так проверены оба новых теста:
 
 \begin{center}
-\begin{tabular}{p{0.32\linewidth}p{0.28\linewidth}p{0.30\linewidth)}
+\begin{tabular}{p{0.32\linewidth}p{0.28\linewidth}p{0.30\linewidth}}
 \toprule
 Что тестируется & Как ломали & Результат \\
 \midrule
@@ -1818,7 +1800,7 @@ public:
 
 \section{Словарь терминов}
 
-\begin{description}[leftmargin=3.2cm,style=nextline]
+\begin{description}
   \item[blob] непрерывный массив чисел, здесь --- вход сети в формате NCHW.
   \item[letterbox] вписывание изображения в квадрат с сохранением пропорций и
         полями.
